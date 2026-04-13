@@ -1,0 +1,27 @@
+# Personal vault data — never commit
+vault/raw/threads/*.md
+vault/compiled/
+vault/candidates/
+vault/graph/
+vault/inbox/
+vault/derived/
+vault/facts.db
+vault/facts.db.*
+vault/*.faiss
+vault/*.map.json
+vault/impressions-index.json
+vault/scripts/extraction_state.json
+vault/scripts/run.log
+vault/scripts/*.jsonl
+vault/scripts/eval_set.jsonl
+vault/scripts/__pycache__/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv/
+
+# OS
+.DS_Store
