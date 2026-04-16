@@ -16,6 +16,9 @@ vault/scripts/*.jsonl
 vault/scripts/eval_set.jsonl
 vault/scripts/__pycache__/
 
+# Cortex runtime — per-session, never committed
+.cortex/session-memory.md
+
 # Python
 __pycache__/
 *.pyc

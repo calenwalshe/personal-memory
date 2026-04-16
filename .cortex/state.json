@@ -1,0 +1,63 @@
+{
+  "slug": "session-continuity",
+  "mode": "execute",
+  "approval_status": "approved",
+  "active_contract": "docs/cortex/contracts/session-continuity/contract-001.md",
+  "artifacts": [
+    "docs/cortex/clarify/session-continuity/20260414T160000Z-clarify-brief.md",
+    "docs/cortex/research/session-continuity/current-understanding.md",
+    "docs/cortex/research/session-continuity/concept-20260414T170000Z.md",
+    "docs/cortex/specs/session-continuity/spec.md",
+    "docs/cortex/specs/session-continuity/gsd-handoff.md",
+    "docs/cortex/contracts/session-continuity/contract-001.md"
+  ],
+  "gates": {
+    "clarify_complete": true,
+    "research_complete": true,
+    "spec_complete": true,
+    "pr_opened": false,
+    "pr_merged": false
+  },
+  "github": {
+    "pr_number": null,
+    "pr_url": null,
+    "issue_number": null,
+    "branch": null
+  },
+  "critique_receipts": [
+    {
+      "gate": "clarify",
+      "slug": "session-continuity",
+      "timestamp": "2026-04-14T16:00:00Z",
+      "severity": "STOP",
+      "finding_count": 4,
+      "stop_count": 2,
+      "caution_count": 2,
+      "engine": "codex",
+      "artifact": "docs/cortex/reviews/session-continuity/critique-clarify.md"
+    },
+    {
+      "gate": "dossier",
+      "slug": "session-continuity",
+      "timestamp": "2026-04-14T17:00:00Z",
+      "severity": "STOP",
+      "finding_count": 4,
+      "stop_count": 2,
+      "caution_count": 2,
+      "engine": "codex",
+      "artifact": "docs/cortex/reviews/session-continuity/critique-dossier-20260414T170000Z.md",
+      "owner_note": "Haiku at hook time is acceptable — PreCompact can block via exit code 2, latency is intentional. LLM call in hook is by design, not a contradiction. Window classifier insufficiency claim accepted as directionally correct pending spec-level validation."
+    },
+    {
+      "gate": "spec",
+      "slug": "session-continuity",
+      "timestamp": "2026-04-14T17:30:00Z",
+      "severity": "STOP",
+      "finding_count": 4,
+      "stop_count": 2,
+      "caution_count": 2,
+      "engine": "codex",
+      "artifact": "docs/cortex/reviews/session-continuity/critique-spec.md"
+    }
+  ]
+}
