@@ -980,14 +980,19 @@ def cmd_chunk(args):
                     result["l2_error"] = str(e)
 
             # Hebbian plasticity: fire together, wire together
-            # For every entity pair that co-appeared in the new atoms, add ETA to their edge weight.
+            # Increment on co-appearing pairs, then decay non-firing edges.
             if atom_ids:
                 try:
-                    from hebbian import update_from_atoms
+                    from hebbian import update_from_atoms, apply_decay
                     hebb_result = update_from_atoms(atom_ids)
+                    fired_entity_ids = hebb_result.pop("fired_entity_ids", set())
                     result["hebbian_edges_updated"] = hebb_result.get("edges_updated", 0)
                     result["hebbian_edges_created"] = hebb_result.get("edges_created", 0)
                     result["hebbian_pairs_found"] = hebb_result.get("pairs_found", 0)
+                    # Decay non-firing hebbian edges (runs after increment)
+                    decay_result = apply_decay(fired_entity_ids)
+                    result["hebbian_edges_decayed"] = decay_result.get("edges_decayed", 0)
+                    result["hebbian_edges_pruned"] = decay_result.get("edges_pruned", 0)
                 except Exception as e:
                     result["hebbian_error"] = str(e)
 
@@ -1075,7 +1080,12 @@ def cmd_graph(args):
             s = stats.get("state", {})
             if s.get("atoms_since_rebuild"):
                 print(f"  Atoms since community rebuild: {s['atoms_since_rebuild']}")
+            from hebbian import stale_edge_count
+            stale = stale_edge_count()
+            print(f"  Stale edges (unfired 30d): {stale}")
         else:
+            from hebbian import stale_edge_count
+            stats["hebbian_stale_edges_30d"] = stale_edge_count()
             out(stats, args.text)
 
     elif action == "entities":

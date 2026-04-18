@@ -1,37 +1,38 @@
 """
-hebbian.py — Live Hebbian weight updates for graph.db
+hebbian.py — Live Hebbian weight updates + decay for graph.db
 
 Implements "neurons that fire together, wire together" as an incremental,
 per-session update. Called from vault chunk after new atoms are written.
 
 Each atom carries a list of entities. For every pair of entities that
 co-appeared in this session's atoms, we add ETA to their relation weight
-in graph.db. Run after every chunker invocation — weights accumulate
-naturally over time.
+in graph.db. For every hebbian edge that did NOT fire this session, we
+apply multiplicative decay: w *= (1 - DECAY). Edges below MIN_WEIGHT
+are pruned (deleted).
 
-Parameters validated by experiments 001–003:
-    ETA = 0.3       Per-session increment. Exp-003 proved ETA=0.3 gives
-                    meaningful gradient across the full weight range.
-                    Over ~65 sessions a top pair reaches ~19.5 — on par
-                    with the strongest co-occurrence baseline edges.
-    MAX_WEIGHT = 20.0  Soft ceiling on a single edge. Prevents runaway
-                    accumulation for very frequent pairs while preserving
-                    the 32x spread between rare and frequent co-activation
-                    (exp-003 finding: MAX_DELTA=3.0 caused binary saturation
-                    at 85% of qualifying pairs; 20.0 unblocks the gradient).
+Parameters validated by experiments 001–003 and research dossier hebbian-decay:
+    ETA = 0.3        Per-session increment. Exp-003 validated.
+    MAX_WEIGHT = 20.0  Soft ceiling — preserves 32x gradient spread.
+    DECAY = 0.03     Per-session multiplicative decay for non-firing edges.
+                     Half-life ~23 days at 1 session/day. Derived from
+                     steady-state formula: w* = p·η / (d·(1-p)).
+                     d=0.03 → p=0.20 pairs stabilize at ~2.5,
+                               p=0.50 pairs stabilize at ~10.0.
+    MIN_WEIGHT = 0.01  Prune threshold — edges below this are deleted
+                     rather than left as floating-point noise.
 
-Live vs batch distinction:
-    This module runs live (once per session, ETA applied once per pair).
-    Experiments 001/003 use batch retrospective mode (ETA × session_count).
-    Params are calibrated for the live case — no MIN_COACTIVATIONS filter
-    since each session fires at most once per pair.
+Increment vs decay order (within one vault chunk call):
+    1. update_from_atoms() — fire increment on co-appearing pairs
+    2. apply_decay()       — decay non-firing hebbian edges
+    Fired pairs receive +ETA first; decay is never applied to a pair
+    that fired in the same session.
 """
 
 import json
 import sqlite3
 import uuid
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from itertools import combinations
 from collections import defaultdict
 
@@ -39,8 +40,10 @@ VAULT = Path(__file__).parent.parent
 ATOMS_DB = VAULT / "atoms.db"
 GRAPH_DB = VAULT / "graph.db"   # symlink → active snapshot
 
-ETA = 0.3        # per-session learning rate (validated by exp-003)
+ETA = 0.3          # per-session learning rate (validated by exp-003)
 MAX_WEIGHT = 20.0  # soft ceiling — preserves gradient, prevents runaway
+DECAY = 0.03       # per-session multiplicative decay for non-firing edges
+MIN_WEIGHT = 0.01  # prune threshold — edges below this are deleted
 
 
 def now() -> str:
@@ -73,7 +76,6 @@ def _upsert_hebbian_edge(eid_a: str, eid_b: str, conn: sqlite3.Connection):
     Creates the edge if it doesn't exist.
     """
     ts = now()
-    # Check existing edge (either direction)
     row = conn.execute(
         """SELECT id, weight FROM relations
            WHERE ((source_entity=? AND target_entity=?) OR (source_entity=? AND target_entity=?))
@@ -99,21 +101,24 @@ def _upsert_hebbian_edge(eid_a: str, eid_b: str, conn: sqlite3.Connection):
 
 def update_from_atoms(atom_ids: list[str], graph_db_path: Path = None) -> dict:
     """
-    Run Hebbian update for the given atom IDs.
+    Run Hebbian increment for the given atom IDs.
 
-    Loads the atoms from atoms.db, extracts entity pairs that co-appeared,
+    Loads atoms from atoms.db, extracts entity pairs that co-appeared,
     and adds ETA to each pair's edge weight in graph.db.
 
-    Returns a summary dict: {pairs_found, edges_updated, edges_created}
+    Returns a summary dict including fired_entity_ids for use by apply_decay().
     """
     if not atom_ids:
-        return {"pairs_found": 0, "edges_updated": 0, "edges_created": 0}
+        return {
+            "pairs_found": 0, "edges_updated": 0, "edges_created": 0,
+            "fired_entity_ids": set(),
+        }
 
     db_path = graph_db_path or GRAPH_DB
     db_path = db_path.resolve() if hasattr(db_path, 'resolve') else Path(db_path).resolve()
 
     if not db_path.exists():
-        return {"error": f"graph.db not found at {db_path}"}
+        return {"error": f"graph.db not found at {db_path}", "fired_entity_ids": set()}
 
     # Load entities from the new atoms
     a_conn = sqlite3.connect(str(ATOMS_DB))
@@ -137,7 +142,10 @@ def update_from_atoms(atom_ids: list[str], graph_db_path: Path = None) -> dict:
             continue
 
     if len(session_entities) < 2:
-        return {"pairs_found": 0, "edges_updated": 0, "edges_created": 0}
+        return {
+            "pairs_found": 0, "edges_updated": 0, "edges_created": 0,
+            "fired_entity_ids": set(),
+        }
 
     # Resolve to entity IDs
     g_conn = sqlite3.connect(str(db_path))
@@ -149,14 +157,17 @@ def update_from_atoms(atom_ids: list[str], graph_db_path: Path = None) -> dict:
         if eid:
             entity_ids[name] = eid
 
+    fired_entity_ids = set(entity_ids.values())
+
     if len(entity_ids) < 2:
         g_conn.close()
-        return {"pairs_found": 0, "edges_updated": 0, "edges_created": 0}
+        return {
+            "pairs_found": 0, "edges_updated": 0, "edges_created": 0,
+            "fired_entity_ids": fired_entity_ids,
+        }
 
-    # Count edges before update
     before_count = g_conn.execute("SELECT COUNT(*) FROM relations").fetchone()[0]
 
-    # Apply Hebbian update for every pair
     pairs = list(combinations(sorted(entity_ids.values()), 2))
     for eid_a, eid_b in pairs:
         _upsert_hebbian_edge(eid_a, eid_b, g_conn)
@@ -171,7 +182,108 @@ def update_from_atoms(atom_ids: list[str], graph_db_path: Path = None) -> dict:
         "entities_resolved": len(entity_ids),
         "edges_updated": len(pairs) - (after_count - before_count),
         "edges_created": after_count - before_count,
+        "fired_entity_ids": fired_entity_ids,
     }
+
+
+def apply_decay(
+    fired_entity_ids: set,
+    graph_db_path: Path = None,
+    decay: float = DECAY,
+    min_weight: float = MIN_WEIGHT,
+) -> dict:
+    """
+    Apply multiplicative decay to all hebbian-written related_to edges
+    that did NOT fire in the current session.
+
+    For each non-firing edge: w = max(0.0, w * (1 - decay))
+    Edges below min_weight are deleted (pruned).
+
+    Args:
+        fired_entity_ids: set of entity IDs that appeared in this session's
+                          atoms (from update_from_atoms return value). These
+                          edges are excluded from decay.
+        graph_db_path:    override path to graph.db (defaults to active symlink)
+        decay:            per-session decay factor (default DECAY=0.03)
+        min_weight:       prune threshold (default MIN_WEIGHT=0.01)
+
+    Returns:
+        {edges_decayed, edges_pruned}
+    """
+    db_path = graph_db_path or GRAPH_DB
+    db_path = db_path.resolve() if hasattr(db_path, 'resolve') else Path(db_path).resolve()
+
+    if not db_path.exists():
+        return {"edges_decayed": 0, "edges_pruned": 0,
+                "error": f"graph.db not found at {db_path}"}
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    ts = now()
+
+    # Load all hebbian related_to edges
+    rows = conn.execute(
+        """SELECT id, source_entity, target_entity, weight
+           FROM relations
+           WHERE relation_type='related_to' AND description='hebbian'"""
+    ).fetchall()
+
+    edges_decayed = 0
+    edges_pruned = 0
+    to_delete = []
+    to_update = []
+
+    for row in rows:
+        # Skip edges where either entity fired this session
+        if row["source_entity"] in fired_entity_ids or row["target_entity"] in fired_entity_ids:
+            continue
+
+        new_weight = row["weight"] * (1.0 - decay)
+
+        if new_weight < min_weight:
+            to_delete.append(row["id"])
+            edges_pruned += 1
+        else:
+            to_update.append((new_weight, ts, ts, row["id"]))
+            edges_decayed += 1
+
+    if to_update:
+        conn.executemany(
+            "UPDATE relations SET weight=?, last_seen=?, updated_at=? WHERE id=?",
+            to_update
+        )
+
+    if to_delete:
+        placeholders = ",".join("?" * len(to_delete))
+        conn.execute(f"DELETE FROM relations WHERE id IN ({placeholders})", to_delete)
+
+    conn.commit()
+    conn.close()
+
+    return {"edges_decayed": edges_decayed, "edges_pruned": edges_pruned}
+
+
+def stale_edge_count(graph_db_path: Path = None, days: int = 30) -> int:
+    """
+    Count hebbian edges that have not fired in the last `days` days.
+    Used by vault graph stats for stale persistence monitoring.
+    """
+    db_path = graph_db_path or GRAPH_DB
+    db_path = db_path.resolve() if hasattr(db_path, 'resolve') else Path(db_path).resolve()
+
+    if not db_path.exists():
+        return 0
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    conn = sqlite3.connect(str(db_path))
+    count = conn.execute(
+        """SELECT COUNT(*) FROM relations
+           WHERE relation_type='related_to' AND description='hebbian'
+           AND last_seen < ?""",
+        (cutoff,)
+    ).fetchone()[0]
+    conn.close()
+    return count
 
 
 if __name__ == "__main__":
@@ -181,4 +293,7 @@ if __name__ == "__main__":
         print("Usage: python3 hebbian.py <atom_id> [atom_id ...]")
         sys.exit(1)
     result = update_from_atoms(atom_ids)
+    fired = result.pop("fired_entity_ids", set())
+    decay_result = apply_decay(fired)
+    result.update(decay_result)
     print(json.dumps(result, indent=2))
