@@ -134,6 +134,35 @@ def _resolve_entity(
     return entity_id
 
 
+def _insert_fact_row(conn: sqlite3.Connection, fact_id: str, content: str,
+                     session_id: str, valid_from: str, topic, entities, confidence,
+                     importance, scope, turn_range, memory_type, project_scope,
+                     event_time, ingestion_time):
+    """Write one fact row + entity links into an open connection. Does not commit."""
+    conn.execute(
+        """INSERT INTO facts
+           (id, content, topic, entities, confidence, importance, scope,
+            valid_from, invalidated_by, session_id, turn_range,
+            memory_type, project_scope, event_time, ingestion_time)
+           VALUES (?,?,?,?,?,?,?,?,NULL,?,?,?,?,?,?)""",
+        (
+            fact_id, content, topic,
+            json.dumps(entities or []),
+            confidence, importance, scope,
+            valid_from, session_id,
+            json.dumps(turn_range or []),
+            memory_type, project_scope, event_time, ingestion_time,
+        ),
+    )
+    for name in (entities or []):
+        if name and name.strip():
+            entity_id = _resolve_entity(conn, name, project_scope=project_scope, today=valid_from)
+            conn.execute(
+                "INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) VALUES (?,?)",
+                (fact_id, entity_id),
+            )
+
+
 def add_fact(
     content: str,
     session_id: str,
@@ -144,55 +173,22 @@ def add_fact(
     importance: float = 0.5,
     scope: str = "learning",
     turn_range: list[int] = None,
-    # Typed memory fields (cortex-memory-platform)
     memory_type: str = "semantic",
     project_scope: str = None,
     event_time: str = None,
     ingestion_time: str = None,
 ) -> str:
-    """Add a fact. Returns the new fact_id."""
+    """Add a single fact. Returns the new fact_id. Use batch_add_facts() for bulk ingestion."""
     fact_id = str(uuid.uuid4())
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        """INSERT INTO facts
-           (id, content, topic, entities, confidence, importance, scope,
-            valid_from, invalidated_by, session_id, turn_range,
-            memory_type, project_scope, event_time, ingestion_time)
-           VALUES (?,?,?,?,?,?,?,?,NULL,?,?,?,?,?,?)""",
-        (
-            fact_id,
-            content,
-            topic,
-            json.dumps(entities or []),
-            confidence,
-            importance,
-            scope,
-            valid_from,
-            session_id,
-            json.dumps(turn_range or []),
-            memory_type,
-            project_scope,
-            event_time,
-            ingestion_time,
-        ),
-    )
-
-    # Entity write-through — canonical resolution at ingest
-    for name in (entities or []):
-        if name and name.strip():
-            entity_id = _resolve_entity(
-                conn, name, project_scope=project_scope, today=valid_from
-            )
-            conn.execute(
-                "INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) VALUES (?,?)",
-                (fact_id, entity_id),
-            )
-
+    _insert_fact_row(conn, fact_id, content, session_id, valid_from, topic, entities,
+                     confidence, importance, scope, turn_range, memory_type,
+                     project_scope, event_time, ingestion_time)
     conn.commit()
     conn.close()
 
-    # Add to FAISS
+    # Incremental FAISS update — one disk write per call
     idx, id_map = _load_index()
     vec = _embed(content)
     idx.add(vec)
@@ -200,6 +196,47 @@ def add_fact(
     _save_index()
 
     return fact_id
+
+
+def batch_add_facts(facts: list[dict], skip_faiss: bool = False) -> list[str]:
+    """
+    Insert multiple facts in a single DB transaction + one FAISS write.
+    Each dict has the same kwargs as add_fact().
+    Returns list of new fact_ids in the same order.
+
+    Pass skip_faiss=True when the caller will run rebuild_faiss() at the end
+    (e.g. vault worker), to avoid stale in-process index races.
+    """
+    if not facts:
+        return []
+
+    ids = [str(uuid.uuid4()) for _ in facts]
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
+    for fact_id, f in zip(ids, facts):
+        _insert_fact_row(
+            conn, fact_id,
+            f["content"], f["session_id"], f["valid_from"],
+            f.get("topic"), f.get("entities"),
+            float(f.get("confidence", 0.7)), float(f.get("importance", 0.5)),
+            f.get("scope", "learning"), f.get("turn_range"),
+            f.get("memory_type", "semantic"), f.get("project_scope"),
+            f.get("event_time"), f.get("ingestion_time"),
+        )
+    conn.commit()
+    conn.close()
+
+    if not skip_faiss:
+        # One FAISS write for the entire batch
+        idx, id_map = _load_index()
+        contents = [f["content"] for f in facts]
+        vecs = _get_model().encode(contents, normalize_embeddings=True).astype("float32")
+        idx.add(vecs)
+        id_map.extend(ids)
+        _save_index()
+
+    return ids
 
 
 def invalidate_fact(fact_id: str, invalidated_by: str):

@@ -1,0 +1,3111 @@
+#!/usr/bin/env python3
+"""
+vault — Memory vault CLI
+
+Fast commands (no model calls):
+  vault projects                     list all projects with session counts
+  vault sessions [project] [-n N]    list recent sessions
+  vault show <session-id>            full episode content
+  vault search <query> [-k K]        FAISS semantic search, raw facts
+  vault threads [project]            list vault threads
+  vault events [project] [-n N]      list recent tool-call events
+  vault messages <session-id>        messages for a session
+
+Synthesis commands (Haiku pre-processes large payloads):
+  vault recap [project] [-n N]       rolling session recap
+  vault recall <topic> [--deep]      synthesize facts on topic
+  vault digest <project>             full project state digest
+
+Global options:
+  --json                 JSON output (default)
+  --text                 Human-readable text output
+  --model MODEL          Synthesis model (default: claude-haiku-4-5-20251001)
+  --no-synth             Return raw data even if large
+  --threshold N          Char count to trigger synthesis (default: 16000)
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+# ── Paths ──────────────────────────────────────────────────────────────────
+VAULT = Path(os.environ.get("MEMORY_VAULT", Path.home() / "memory/vault"))
+DB = VAULT / "events.db"
+SESSIONS_DIR = VAULT / "raw" / "sessions"
+THREADS_DIR = VAULT / "raw" / "threads"
+
+sys.path.insert(0, str(VAULT / "scripts"))
+from tz import to_local, to_local_short
+
+# ── Claude binary ──────────────────────────────────────────────────────────
+_NVM_BIN = Path.home() / ".nvm/versions/node/v20.20.0/bin"
+CLAUDE_BIN = (
+    os.environ.get("CLAUDE_BIN")
+    or shutil.which("claude")
+    or str(_NVM_BIN / "claude")
+)
+
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_THRESHOLD = 16000  # chars before auto-synthesis kicks in
+
+
+# ── Utilities ──────────────────────────────────────────────────────────────
+
+def db_conn():
+    if not DB.exists():
+        die(f"events.db not found at {DB}")
+    conn = sqlite3.connect(str(DB))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA query_only=1")
+    return conn
+
+
+def parse_frontmatter(text: str) -> tuple[dict, str]:
+    """Parse YAML-ish frontmatter from a markdown file. Returns (meta, body)."""
+    if not text.startswith("---"):
+        return {}, text
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}, text
+    fm_raw = text[3:end].strip()
+    body = text[end + 4:].lstrip("\n")
+    meta = {}
+    for line in fm_raw.splitlines():
+        m = re.match(r'^(\w[\w_-]*):\s*"?(.*?)"?\s*$', line)
+        if m:
+            meta[m.group(1)] = m.group(2)
+    return meta, body
+
+
+def find_episode(session_id: str) -> Path | None:
+    """Find episode file by session_id or stem prefix."""
+    # Exact stem match first
+    for f in SESSIONS_DIR.glob(f"*{session_id}*.md"):
+        return f
+    # Prefix match on timestamp
+    for f in sorted(SESSIONS_DIR.glob("*.md"), reverse=True):
+        if session_id in f.stem:
+            return f
+    return None
+
+
+def llm_call(prompt: str, model: str) -> str:
+    cmd = [CLAUDE_BIN, "-p", "--model", model, prompt]
+    # Unset ANTHROPIC_API_KEY so claude -p uses subscription, not API credits
+    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
+    if result.returncode != 0:
+        return f"[model call failed: {result.stderr.strip()[:200]}]"
+    return result.stdout.strip()
+
+
+def maybe_synthesize(raw: str, instruction: str, model: str, threshold: int, no_synth: bool) -> str:
+    """If raw exceeds threshold and no_synth is False, compress via model."""
+    if no_synth or len(raw) <= threshold:
+        return raw
+    prompt = f"""{instruction}
+
+---
+{raw}
+---
+
+Respond concisely. Preserve specific dates, project names, and outcomes."""
+    return llm_call(prompt, model)
+
+
+def out(data, text_mode: bool):
+    if text_mode:
+        if isinstance(data, str):
+            print(data)
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    print(json.dumps(item, indent=2))
+                else:
+                    print(item)
+        else:
+            print(json.dumps(data, indent=2))
+    else:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def die(msg: str):
+    print(json.dumps({"error": msg}), file=sys.stderr)
+    sys.exit(1)
+
+
+# ── Commands ───────────────────────────────────────────────────────────────
+
+def cmd_projects(args):
+    conn = db_conn()
+    rows = conn.execute("""
+        SELECT project,
+               COUNT(*) as session_count,
+               MAX(started_at) as last_seen,
+               MIN(started_at) as first_seen
+        FROM sessions
+        WHERE project IS NOT NULL AND project != ''
+        GROUP BY project
+        ORDER BY last_seen DESC
+    """).fetchall()
+    conn.close()
+
+    # Also count episode files per project
+    episode_counts = {}
+    if SESSIONS_DIR.exists():
+        for f in SESSIONS_DIR.glob("*.md"):
+            try:
+                meta, _ = parse_frontmatter(f.read_text(errors="replace"))
+                p = meta.get("project", "")
+                if p:
+                    episode_counts[p] = episode_counts.get(p, 0) + 1
+            except Exception:
+                pass
+
+    result = []
+    seen = set()
+    for r in rows:
+        p = r["project"]
+        seen.add(p)
+        result.append({
+            "project": p,
+            "db_sessions": r["session_count"],
+            "episode_files": episode_counts.get(p, 0),
+            "last_seen": to_local_short(r["last_seen"]),
+            "first_seen": to_local_short(r["first_seen"]),
+        })
+
+    # Add projects only in episode files
+    for p, count in episode_counts.items():
+        if p not in seen:
+            result.append({
+                "project": p,
+                "db_sessions": 0,
+                "episode_files": count,
+                "last_seen": None,
+                "first_seen": None,
+            })
+
+    result.sort(key=lambda x: x["last_seen"] or "", reverse=True)
+    out(result, args.text)
+
+
+def cmd_sessions(args):
+    conn = db_conn()
+    where = "WHERE s.project = ?" if args.project else ""
+    params = [args.project] if args.project else []
+
+    rows = conn.execute(f"""
+        SELECT s.session_id, s.project, s.started_at, s.ended_at,
+               s.event_count, s.git_branch, s.git_sha,
+               ss.away_summary, ss.haiku_snapshot
+        FROM sessions s
+        LEFT JOIN session_snapshots ss
+          ON ss.session_id = s.session_id AND ss.snapshot_type = 'end'
+        {where}
+        ORDER BY s.started_at DESC
+        LIMIT ?
+    """, params + [args.n]).fetchall()
+    conn.close()
+
+    result = []
+    for r in rows:
+        summary = r["away_summary"] or ""
+        if not summary and r["haiku_snapshot"]:
+            # Extract Accomplished line from haiku
+            m = re.search(r"Accomplished:\s*(.+)", r["haiku_snapshot"] or "")
+            summary = m.group(1).strip() if m else ""
+        result.append({
+            "session_id": r["session_id"],
+            "project": r["project"],
+            "started_at": to_local_short(r["started_at"]),
+            "ended_at": to_local_short(r["ended_at"]),
+            "event_count": r["event_count"],
+            "git_branch": r["git_branch"],
+            "summary": summary[:200] if summary else None,
+        })
+    out(result, args.text)
+
+
+def cmd_show(args):
+    ep = find_episode(args.session_id)
+    if not ep:
+        # Try by DB session_id prefix
+        die(f"No episode found for: {args.session_id}")
+    text = ep.read_text(errors="replace")
+    meta, body = parse_frontmatter(text)
+    result = {"file": str(ep.name), "meta": meta, "body": body}
+    out(result, args.text)
+
+
+def cmd_search(args):
+    # Prefer atoms.db, fall back to facts.db
+    atoms_db = VAULT / "atoms.db"
+    if atoms_db.exists():
+        try:
+            from atom_store import query_atoms
+            atoms = query_atoms(args.query, top_k=args.k, project=args.project)
+            if atoms:
+                result = [
+                    {
+                        "id": a["id"],
+                        "content": a["content"],
+                        "atom_type": a.get("atom_type"),
+                        "topic": a.get("topic"),
+                        "score": round(a.get("score", 0), 4),
+                        "time_first": to_local_short(a.get("time_first")),
+                        "project": a.get("project"),
+                    }
+                    for a in atoms
+                ]
+                out(result, args.text)
+                return
+        except ImportError:
+            pass
+
+    # Fallback to facts.db
+    try:
+        from fact_store import query_facts
+    except ImportError as e:
+        die(f"Neither atom_store nor fact_store available: {e}")
+    facts = query_facts(args.query, top_k=args.k, project_scope=args.project)
+    result = [
+        {
+            "id": f["id"],
+            "content": f["content"],
+            "topic": f.get("topic"),
+            "score": round(f.get("score", 0), 4),
+            "valid_from": f.get("valid_from"),
+            "memory_type": f.get("memory_type"),
+            "project_scope": f.get("project_scope"),
+        }
+        for f in facts
+    ]
+    out(result, args.text)
+
+
+def cmd_context(args):
+    """
+    Fast project context for SessionStart injection.
+    Returns high-importance atoms (or facts) as plain text.
+    No LLM calls. Output is budget-capped (default 2000 chars).
+    Prefers atoms.db, falls back to facts.db.
+    """
+    import sqlite3 as _sqlite3
+
+    project = args.project
+    rows = []
+    source = "atoms"
+
+    # Try atoms.db first
+    atoms_db = VAULT / "atoms.db"
+    if atoms_db.exists():
+        conn = _sqlite3.connect(str(atoms_db))
+        conn.row_factory = _sqlite3.Row
+        rows = conn.execute("""
+            SELECT content, topic, atom_type as memory_type, time_first as valid_from,
+                   importance, confidence
+            FROM atoms
+            WHERE project = ? AND invalidated_by IS NULL
+            ORDER BY importance DESC, confidence DESC
+            LIMIT ?
+        """, [project, args.k]).fetchall()
+        conn.close()
+
+    # Fall back to facts.db
+    if not rows:
+        source = "facts"
+        facts_db = VAULT / "facts.db"
+        if not facts_db.exists():
+            out("", True)
+            return
+        conn = _sqlite3.connect(str(facts_db))
+        conn.row_factory = _sqlite3.Row
+        rows = conn.execute("""
+            SELECT content, topic, memory_type, valid_from, importance, confidence
+            FROM facts
+            WHERE project_scope = ? AND invalidated_by IS NULL
+            ORDER BY importance DESC, confidence DESC
+            LIMIT ?
+        """, [project, args.k]).fetchall()
+        conn.close()
+
+    if not rows:
+        # Global fallback from facts.db
+        facts_db = VAULT / "facts.db"
+        if facts_db.exists():
+            conn = _sqlite3.connect(str(facts_db))
+            conn.row_factory = _sqlite3.Row
+            rows = conn.execute("""
+                SELECT content, topic, memory_type, valid_from, importance, confidence
+                FROM facts
+                WHERE invalidated_by IS NULL
+                ORDER BY importance DESC, confidence DESC
+                LIMIT ?
+            """, [args.k // 2]).fetchall()
+            conn.close()
+            source = "facts-global"
+
+    if not rows:
+        out("", True)
+        return
+
+    # Format as concise plain text, budget-capped
+    lines = [f"VAULT CONTEXT — {project} ({len(rows)} {source}):"]
+    total = len(lines[0])
+    budget = args.budget
+
+    for r in rows:
+        mtype = r["memory_type"] or "?"
+        date = to_local_short(r["valid_from"])
+        line = f"[{mtype}/{date}] {r['content']}"
+        if total + len(line) + 1 > budget:
+            break
+        lines.append(line)
+        total += len(line) + 1
+
+    text = "\n".join(lines)
+    if args.json_output:
+        out({"project": project, "count": len(rows), "source": source, "context": text}, False)
+    else:
+        print(text)
+
+
+def cmd_threads(args):
+    if not THREADS_DIR.exists():
+        out([], args.text)
+        return
+    result = []
+    for f in sorted(THREADS_DIR.glob("*.md"), reverse=True):
+        try:
+            meta, _ = parse_frontmatter(f.read_text(errors="replace")[:2000])
+        except Exception:
+            meta = {}
+        project = meta.get("project", "")
+        if args.project and project != args.project:
+            continue
+        result.append({
+            "file": f.name,
+            "name": meta.get("name", f.stem),
+            "type": meta.get("type"),
+            "status": meta.get("status"),
+            "project": project,
+            "created": meta.get("created") or meta.get("timestamp"),
+        })
+    out(result, args.text)
+
+
+def cmd_events(args):
+    conn = db_conn()
+    where = "WHERE project = ?" if args.project else ""
+    params = [args.project] if args.project else []
+    rows = conn.execute(f"""
+        SELECT event_id, project, tool_name, timestamp,
+               tool_input_preview, purpose_preview, had_error
+        FROM events
+        {where}
+        ORDER BY timestamp DESC
+        LIMIT ?
+    """, params + [args.n]).fetchall()
+    conn.close()
+    result = [dict(r) for r in rows]
+    out(result, args.text)
+
+
+def cmd_messages(args):
+    conn = db_conn()
+    rows = conn.execute("""
+        SELECT role, content_preview, sequence_n, timestamp
+        FROM messages
+        WHERE session_id = ?
+        ORDER BY sequence_n ASC
+    """, [args.session_id]).fetchall()
+    conn.close()
+    if not rows:
+        die(f"No messages found for session: {args.session_id}")
+    out([dict(r) for r in rows], args.text)
+
+
+def cmd_recap(args):
+    """Rolling session recap, newest first. Synthesizes via Haiku if large."""
+    # Pull episodes from files (richer than DB for this use case)
+    episodes = []
+    if SESSIONS_DIR.exists():
+        for f in sorted(SESSIONS_DIR.glob("*.md"), reverse=True):
+            try:
+                meta, body = parse_frontmatter(f.read_text(errors="replace"))
+            except Exception:
+                continue
+            proj = meta.get("project", "")
+            if args.project and proj != args.project:
+                continue
+            # Skip git-commit noise
+            if "git-commit" in f.name:
+                continue
+            away = ""
+            haiku = ""
+            m = re.search(r"## away_summary.*?\n(.*?)(?=\n## |\Z)", body, re.DOTALL)
+            if m:
+                away = m.group(1).strip()
+            m2 = re.search(r"## haiku_summary.*?\n(.*?)(?=\n## |\Z)", body, re.DOTALL)
+            if m2:
+                haiku = m2.group(1).strip()
+            summary = away or re.search(r"Accomplished:\s*(.+)", haiku or "")
+            if isinstance(summary, re.Match):
+                summary = summary.group(1).strip()
+            episodes.append({
+                "file": f.name,
+                "timestamp": meta.get("timestamp", ""),
+                "project": proj,
+                "event": meta.get("event", ""),
+                "status": meta.get("status", ""),
+                "away_summary": away,
+                "haiku_accomplished": re.search(r"Accomplished:\s*(.+)", haiku).group(1).strip()
+                    if re.search(r"Accomplished:\s*(.+)", haiku) else "",
+                "haiku_open_thread": re.search(r"Open thread:\s*(.+)", haiku).group(1).strip()
+                    if re.search(r"Open thread:\s*(.+)", haiku) else "",
+            })
+            if len(episodes) >= args.n:
+                break
+
+    if not episodes:
+        out({"episodes": [], "synthesis": None}, args.text)
+        return
+
+    # Build raw text for synthesis
+    lines = []
+    for ep in episodes:
+        ts = to_local_short(ep["timestamp"])
+        summary = ep["away_summary"] or ep["haiku_accomplished"] or "(no summary)"
+        open_t = ep["haiku_open_thread"]
+        line = f"[{ts}] [{ep['project']}] {ep['event']} — {summary}"
+        if open_t and open_t not in ("none", "unknown"):
+            line += f" | next: {open_t}"
+        lines.append(line)
+
+    raw = "\n".join(lines)
+
+    synthesis = maybe_synthesize(
+        raw,
+        instruction=(
+            f"You are summarizing recent activity for project '{args.project or 'all projects'}'. "
+            "The input is a list of session episodes newest-first. "
+            "Group into coherent chunks of work. For each chunk: what was done, what's open. "
+            "Keep it tight — one paragraph per chunk max."
+        ),
+        model=args.model,
+        threshold=args.threshold,
+        no_synth=args.no_synth,
+    )
+
+    out({"episodes": episodes, "synthesis": synthesis}, args.text)
+
+
+def cmd_recall(args):
+    """Semantic recall with Haiku synthesis. Prefers atoms.db, falls back to facts.db."""
+    top_k = 10 if args.deep else 5
+    items = []
+    source = "atoms"
+
+    # Try atoms first
+    atoms_db = VAULT / "atoms.db"
+    if atoms_db.exists():
+        try:
+            from atom_store import query_atoms
+            items = query_atoms(args.topic, top_k=top_k)
+        except ImportError:
+            pass
+
+    # Fall back to facts
+    if not items:
+        source = "facts"
+        try:
+            from fact_store import query_facts
+            items = query_facts(args.topic, top_k=top_k)
+        except ImportError as e:
+            die(f"Neither atom_store nor fact_store available: {e}")
+
+    if not items:
+        out({"topic": args.topic, "items": [], "source": source,
+             "synthesis": f"No memories found matching '{args.topic}'."}, args.text)
+        return
+
+    # L2 community search: prepend top matching community summaries
+    community_context = []
+    graph_db = VAULT / "graph.db"
+    if graph_db.exists():
+        try:
+            from graph_store import query_communities, embed_communities
+            embed_communities()  # no-op if already embedded
+            community_matches = query_communities(args.topic, top_k=2)
+            community_context = [
+                c for c in community_matches
+                if c["score"] > 0.45 and c.get("summary")
+            ]
+        except Exception:
+            pass
+
+    # Normalize date field (atoms use time_first, facts use valid_from)
+    def _date(item):
+        return to_local_short(item.get("time_first") or item.get("valid_from"))
+
+    items_text = "\n".join(
+        f"[{i+1}] ({_date(f)}) {f['content']} "
+        f"[score={f.get('score',0):.3f}]"
+        for i, f in enumerate(items)
+    )
+
+    # Build synthesis context: community summaries (if matched) + atoms
+    synthesis_context = items_text
+    if community_context:
+        community_section = "\n\n".join(
+            f"=== {c['label']} (L2 community summary) ===\n{c['summary']}"
+            for c in community_context
+        )
+        synthesis_context = community_section + "\n\n--- Specific memories ---\n" + items_text
+
+    synthesis = maybe_synthesize(
+        synthesis_context,
+        instruction=(
+            f"Synthesize a concise answer (1-3 sentences) for the query: \"{args.topic}\". "
+            "Reference session dates. Format: 'You learned: [summary] (session date: YYYY-MM-DD)'."
+        ),
+        model=args.model,
+        threshold=0,  # always synthesize for recall
+        no_synth=args.no_synth,
+    )
+
+    pending = 0
+    try:
+        from fact_store import pending_review_count
+        pending = pending_review_count()
+    except Exception:
+        pass
+
+    result = {
+        "topic": args.topic,
+        "source": source,
+        "communities": [
+            {
+                "label": c["label"],
+                "score": c["score"],
+                "summary": c.get("summary"),
+            }
+            for c in community_context
+        ],
+        "items": [
+            {
+                "content": f["content"],
+                "date": _date(f),
+                "score": round(f.get("score", 0), 4),
+                "topic": f.get("topic"),
+            }
+            for f in items
+        ],
+        "synthesis": synthesis,
+        "pending_contradictions": pending,
+    }
+    if args.text and community_context:
+        print(f"\n{'='*60}")
+        print(f"Topic: {args.topic}")
+        print(f"{'='*60}")
+        for c in community_context:
+            print(f"\n[Community: {c['label']}  score={c['score']:.3f}]")
+            print(c["summary"][:500] + "..." if len(c.get("summary","")) > 500 else c.get("summary",""))
+        print(f"\n--- Specific atoms ---")
+    out(result, args.text)
+
+
+def cmd_digest(args):
+    """Full project state digest via Haiku."""
+    project = args.project
+
+    # Gather: sessions, recent episodes, threads
+    conn = db_conn()
+    sessions = conn.execute("""
+        SELECT session_id, started_at, ended_at, event_count
+        FROM sessions WHERE project = ?
+        ORDER BY started_at DESC LIMIT 20
+    """, [project]).fetchall()
+
+    snapshots = conn.execute("""
+        SELECT away_summary, haiku_snapshot, timestamp
+        FROM session_snapshots
+        WHERE project = ? AND snapshot_type = 'end'
+        ORDER BY timestamp DESC LIMIT 10
+    """, [project]).fetchall()
+    conn.close()
+
+    parts = [f"# Project: {project}\n"]
+
+    if sessions:
+        parts.append(f"## Sessions ({len(sessions)} recent)")
+        for s in sessions:
+            parts.append(f"  {to_local_short(s['started_at'])} → {to_local_short(s['ended_at'])}  events={s['event_count']}")
+
+    if snapshots:
+        parts.append("\n## Session Summaries")
+        for s in snapshots:
+            summary = s["away_summary"] or ""
+            if not summary and s["haiku_snapshot"]:
+                m = re.search(r"Accomplished:\s*(.+)", s["haiku_snapshot"])
+                summary = m.group(1) if m else ""
+            if summary:
+                parts.append(f"  [{to_local_short(s['timestamp'])}] {summary[:200]}")
+
+    # Threads
+    if THREADS_DIR.exists():
+        thread_lines = []
+        for f in THREADS_DIR.glob("*.md"):
+            try:
+                meta, _ = parse_frontmatter(f.read_text(errors="replace")[:1000])
+                if meta.get("project") == project or project.lower() in f.name.lower():
+                    thread_lines.append(f"  [{meta.get('type','?')}] {meta.get('name', f.stem)}")
+            except Exception:
+                pass
+        if thread_lines:
+            parts.append("\n## Threads")
+            parts.extend(thread_lines)
+
+    raw = "\n".join(parts)
+
+    synthesis = maybe_synthesize(
+        raw,
+        instruction=(
+            f"Give a concise state-of-the-project digest for '{project}'. "
+            "Cover: what's been built, what's in progress, what's open/blocked. "
+            "3-5 bullet points max."
+        ),
+        model=args.model,
+        threshold=0,  # always synthesize for digest
+        no_synth=args.no_synth,
+    )
+
+    out({"project": project, "raw": raw, "synthesis": synthesis}, args.text)
+
+
+# ── Promotion pipeline ────────────────────────────────────────────────────
+
+QUEUE_FILE = Path.home() / ".cortex" / "promotion_queue.txt"
+PROMO_LOG  = Path.home() / ".cortex" / "promotion_log.jsonl"
+WORKER_LOCK = Path("/tmp/vault-worker.lock")
+
+
+def _queue_read() -> list[str]:
+    if not QUEUE_FILE.exists():
+        return []
+    return [l.strip() for l in QUEUE_FILE.read_text().splitlines() if l.strip()]
+
+
+def _queue_write(ids: list[str]):
+    QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    QUEUE_FILE.write_text("\n".join(ids) + ("\n" if ids else ""))
+
+
+def _promoted_ids() -> set[str]:
+    """Sessions that extracted at least one fact (status ok/success)."""
+    if not PROMO_LOG.exists():
+        return set()
+    ids = set()
+    for line in PROMO_LOG.read_text().splitlines():
+        try:
+            e = json.loads(line)
+            if e.get("status") in ("ok", "success"):
+                ids.add(e["session_id"])
+        except Exception:
+            pass
+    return ids
+
+
+def _attempted_ids() -> set[str]:
+    """Sessions that have been processed (ok, skipped, already_promoted, or error) — won't retry."""
+    if not PROMO_LOG.exists():
+        return set()
+    ids = set()
+    for line in PROMO_LOG.read_text().splitlines():
+        try:
+            e = json.loads(line)
+            if e.get("status") in ("ok", "success", "skipped", "already_promoted", "error"):
+                ids.add(e["session_id"])
+        except Exception:
+            pass
+    return ids
+
+
+def _log_promotion(result: dict):
+    PROMO_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(PROMO_LOG, "a") as f:
+        f.write(json.dumps(result) + "\n")
+
+
+def cmd_queue(args):
+    ids = _queue_read()
+
+    if args.count:
+        print(len(ids))
+        return
+
+    if args.action == "add":
+        if not args.session_id:
+            die("queue add requires a session_id")
+        if args.session_id not in ids:
+            ids.append(args.session_id)
+            _queue_write(ids)
+        out({"queued": args.session_id, "queue_length": len(ids)}, args.text)
+        return
+
+    if args.action == "clear":
+        _queue_write([])
+        out({"cleared": True}, args.text)
+        return
+
+    out({"queue": ids, "count": len(ids)}, args.text)
+
+
+def cmd_status(args):
+    promoted = _promoted_ids()
+    attempted = _attempted_ids()
+    queue = _queue_read()
+
+    # Count skipped (attempted but no facts extracted)
+    skipped_count = len(attempted) - len(promoted)
+
+    # Total sessions from events.db
+    total_db = 0
+    try:
+        conn = db_conn()
+        total_db = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        conn.close()
+    except Exception:
+        pass
+
+    # Total session JSONLs on disk
+    sessions_dir = Path.home() / ".claude" / "projects"
+    total_disk = sum(1 for _ in sessions_dir.glob("*/*.jsonl")) if sessions_dir.exists() else 0
+
+    out({
+        "promoted": len(promoted),
+        "skipped": skipped_count,
+        "attempted": len(attempted),
+        "db_sessions": total_db,
+        "disk_sessions": total_disk,
+        "queue_pending": len(queue),
+        "backlog": max(0, total_disk - len(attempted)),
+    }, args.text)
+
+
+def cmd_promote(args):
+    sys.path.insert(0, str(VAULT / "scripts"))
+    try:
+        from extractor import promote_session
+    except ImportError as e:
+        die(f"extractor not available: {e}")
+
+    already = _attempted_ids()
+    if args.session_id in already:
+        out({"session_id": args.session_id, "status": "already_attempted"}, args.text)
+        return
+
+    result = promote_session(args.session_id, model=args.model, dry_run=args.dry_run)
+
+    if not args.dry_run and result["status"] in ("ok", "skipped", "already_promoted"):
+        # Log terminal states — prevents infinite retry
+        _log_promotion(result)
+        # Remove from queue if present
+        q = _queue_read()
+        q = [x for x in q if x != args.session_id]
+        _queue_write(q)
+
+    out(result, args.text)
+
+
+def cmd_worker(args):
+    """Drain promotion queue serially. Uses flock so only one worker runs."""
+    import fcntl, time
+
+    sys.path.insert(0, str(VAULT / "scripts"))
+    try:
+        from extractor import promote_session
+    except ImportError as e:
+        die(f"extractor not available: {e}")
+
+    # Acquire exclusive lock — exit immediately if another worker is running
+    lock_fd = open(WORKER_LOCK, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        out({"status": "worker_already_running"}, args.text)
+        return
+
+    try:
+        attempted = _attempted_ids()
+        processed = 0
+        skipped = 0
+        errors = 0
+
+        while True:
+            queue = _queue_read()
+            pending = [s for s in queue if s not in attempted]
+
+            if not pending:
+                break
+
+            session_id = pending[0]
+
+            # skip_faiss=True: DB writes only, one rebuild at the end
+            result = promote_session(session_id, model=args.model,
+                                     dry_run=args.dry_run, skip_faiss=True)
+            status = result["status"]
+
+            if status == "ok":
+                if not args.dry_run:
+                    _log_promotion(result)
+                    attempted.add(session_id)
+                processed += 1
+            elif status in ("skipped", "already_promoted"):
+                if not args.dry_run:
+                    _log_promotion(result)
+                    attempted.add(session_id)
+                skipped += 1
+            else:
+                errors += 1
+
+            # Always remove from queue after attempt
+            q = _queue_read()
+            q = [x for x in q if x != session_id]
+            _queue_write(q)
+
+            if args.text:
+                facts = result.get("total_facts", 0)
+                proj = result.get("project", "?")
+                print(f"[{session_id[:8]}] {proj} — {facts} facts — {status}")
+
+            if args.once:
+                break
+
+        # Rebuild FAISS once after draining — ensures consistency regardless of
+        # how many concurrent processes may have touched the DB during this run
+        faiss_count = 0
+        if not args.dry_run and processed > 0:
+            try:
+                from fact_store import rebuild_faiss
+                faiss_count = rebuild_faiss()
+                if args.text:
+                    print(f"FAISS rebuilt: {faiss_count} facts indexed")
+            except Exception as e:
+                if args.text:
+                    print(f"FAISS rebuild failed: {e}")
+
+        out({
+            "processed": processed,
+            "skipped": skipped,
+            "errors": errors,
+            "faiss_rebuilt": faiss_count,
+            "dry_run": args.dry_run,
+        }, args.text)
+
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+
+
+# ── L1 chunker commands ────────────────────────────────────────────────────
+
+CHUNK_LOCK = Path("/tmp/vault-chunker.lock")
+
+
+def cmd_chunk(args):
+    """Run the L1 chunker for a project. Uses flock so concurrent triggers are safe."""
+    import fcntl
+
+    sys.path.insert(0, str(VAULT / "scripts"))
+    try:
+        from chunker import run_chunker
+    except ImportError as e:
+        die(f"chunker not available: {e}")
+
+    # Exclusive lock — exit immediately if another chunker is running
+    lock_fd = open(CHUNK_LOCK, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        out({"status": "chunker_already_running"}, args.text)
+        return
+
+    try:
+        result = run_chunker(
+            args.project,
+            model=args.model,
+            dry_run=args.dry_run,
+            skip_faiss=args.skip_faiss,
+        )
+
+        # Rebuild FAISS after real runs that produced atoms
+        if not args.dry_run and not args.skip_faiss and result.get("atoms_produced", 0) > 0:
+            try:
+                from atom_store import rebuild_faiss
+                faiss_count = rebuild_faiss()
+                result["faiss_rebuilt"] = faiss_count
+            except Exception as e:
+                result["faiss_error"] = str(e)
+
+            # L2: incremental entity resolution + co-occurrence (Phase 1+2, no LLM)
+            atom_ids = result.get("atom_ids", [])
+            if atom_ids:
+                try:
+                    from graph_store import incremental_update
+                    l2_result = incremental_update(atom_ids)
+                    result["l2_entities_updated"] = l2_result.get("entities_updated", 0)
+                    result["l2_relations_updated"] = l2_result.get("relations_updated", 0)
+                    result["l2_unresolved"] = l2_result.get("unresolved_entities", 0)
+                    # Kick async community rebuild if threshold hit
+                    if l2_result.get("should_rebuild_communities"):
+                        import subprocess
+                        vault_bin = str(Path(__file__).resolve())
+                        subprocess.Popen(
+                            [sys.executable, vault_bin, "graph", "rebuild"],
+                            stdout=open("/tmp/vault-l2.log", "a"),
+                            stderr=subprocess.STDOUT,
+                        )
+                        result["l2_community_rebuild_triggered"] = True
+                except Exception as e:
+                    result["l2_error"] = str(e)
+
+            # Hebbian plasticity: fire together, wire together
+            # For every entity pair that co-appeared in the new atoms, add ETA to their edge weight.
+            if atom_ids:
+                try:
+                    from hebbian import update_from_atoms
+                    hebb_result = update_from_atoms(atom_ids)
+                    result["hebbian_edges_updated"] = hebb_result.get("edges_updated", 0)
+                    result["hebbian_edges_created"] = hebb_result.get("edges_created", 0)
+                    result["hebbian_pairs_found"] = hebb_result.get("pairs_found", 0)
+                except Exception as e:
+                    result["hebbian_error"] = str(e)
+
+        out(result, args.text)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+
+
+def cmd_atoms(args):
+    """List, show, search, or stats for L1 atoms."""
+    sys.path.insert(0, str(VAULT / "scripts"))
+
+    action = args.action or "list"
+
+    if action == "list":
+        from atom_store import list_atoms
+        atoms = list_atoms(project=args.project, limit=args.n)
+        out(atoms, args.text)
+
+    elif action == "show":
+        if not args.atom_id:
+            die("atoms show requires an atom ID")
+        from atom_store import get_atom
+        atom = get_atom(args.atom_id)
+        if not atom:
+            die(f"No atom found: {args.atom_id}")
+        out(atom, args.text)
+
+    elif action == "search":
+        if not args.query:
+            die("atoms search requires a query")
+        from atom_store import query_atoms
+        results = query_atoms(args.query, top_k=args.k, project=args.project)
+        display = [
+            {
+                "id": a["id"],
+                "content": a["content"],
+                "atom_type": a["atom_type"],
+                "project": a["project"],
+                "score": round(a.get("score", 0), 4),
+                "source_count": a.get("source_count"),
+                "time_first": to_local_short(a.get("time_first")),
+                "topic": a.get("topic"),
+            }
+            for a in results
+        ]
+        out(display, args.text)
+
+    elif action == "stats":
+        from atom_store import atom_stats
+        out(atom_stats(), args.text)
+
+    else:
+        die(f"Unknown atoms action: {action}")
+
+
+# ── L2 Graph commands ──────────────────────────────────────────────────────
+
+def cmd_graph(args):
+    """L2 entity graph + community operations."""
+    sys.path.insert(0, str(VAULT / "scripts"))
+
+    action = getattr(args, "graph_action", None) or "stats"
+
+    if action == "stats":
+        from graph_store import graph_stats
+        stats = graph_stats()
+        if args.text:
+            if not stats.get("initialized"):
+                print("graph.db not initialized. Run: vault graph normalize")
+                return
+            print(f"Entity graph ({VAULT / 'graph.db'}):")
+            print(f"  Entities:       {stats['entities']}")
+            for t, n in stats.get("entity_by_type", {}).items():
+                print(f"    {t:12s}  {n}")
+            print(f"  Relations:      {stats['relations']}")
+            for t, n in stats.get("relation_by_type", {}).items():
+                print(f"    {t:12s}  {n}")
+            print(f"  Interest areas: {stats['interest_areas']}")
+            print(f"  Communities:    {stats['communities']}"
+                  + (f" ({stats['stale_communities']} stale)" if stats.get('stale_communities') else ""))
+            if stats.get("unresolved_entity_queue", 0):
+                print(f"  Unresolved queue: {stats['unresolved_entity_queue']}")
+            s = stats.get("state", {})
+            if s.get("atoms_since_rebuild"):
+                print(f"  Atoms since community rebuild: {s['atoms_since_rebuild']}")
+        else:
+            out(stats, args.text)
+
+    elif action == "entities":
+        from graph_store import list_entities
+        etype = getattr(args, "type", None)
+        n = getattr(args, "n", 50)
+        entities = list_entities(entity_type=etype, limit=n)
+        if args.text:
+            for e in entities:
+                aliases_str = ", ".join(e["aliases"][:3]) if e["aliases"] else ""
+                print(f"  [{e['entity_type']:8s}] {e['canonical_name']:30s}  atoms={e['atom_count']:3d}"
+                      + (f"  aliases: {aliases_str}" if aliases_str else ""))
+        else:
+            display = [{
+                "name": e["canonical_name"],
+                "type": e["entity_type"],
+                "atom_count": e["atom_count"],
+                "aliases": e["aliases"][:5],
+            } for e in entities]
+            out(display, args.text)
+
+    elif action == "entity":
+        name = getattr(args, "name", None)
+        if not name:
+            die("graph entity requires a name")
+        from graph_store import get_entity_by_alias, list_relations
+        entity = get_entity_by_alias(name)
+        if not entity:
+            die(f"Entity not found: {name!r}")
+        eid = entity["id"]
+        relations = list_relations(entity_id=eid, min_weight=1.0)
+
+        if args.text:
+            print(f"Entity: {entity['canonical_name']} [{entity['entity_type']}]")
+            print(f"  Aliases: {', '.join(entity['aliases'])}")
+            print(f"  Atoms: {entity['atom_count']}")
+            print(f"  First seen: {to_local_short(entity.get('first_seen'))}")
+            print(f"  Last seen:  {to_local_short(entity.get('last_seen'))}")
+            if relations:
+                print(f"\n  Relations ({len(relations)}):")
+                for r in sorted(relations, key=lambda x: -x["weight"])[:15]:
+                    other = r["tgt_name"] if r["source_entity"] == eid else r["src_name"]
+                    direction = "→" if r["source_entity"] == eid else "←"
+                    print(f"    {direction} {other:30s}  {r['relation_type']}  (weight={r['weight']:.0f})")
+        else:
+            entity.pop("embedding", None)  # blob not serializable
+            out({"entity": entity, "relations": relations[:20]}, args.text)
+
+    elif action == "interests":
+        from graph_store import list_interest_areas
+        areas = list_interest_areas()
+        if not areas:
+            print("No interest areas found. Run: vault graph normalize")
+            return
+        if args.text:
+            print("Personal Interest Areas:")
+            for ia in areas:
+                raw = ", ".join(ia["raw_tags"][:4])
+                print(f"  {ia['display_name']:30s}  atoms={ia['atom_count']:3d}  tags: {raw}")
+        else:
+            out(areas, args.text)
+
+    elif action == "communities":
+        from graph_store import list_communities
+        communities = list_communities()
+        if not communities:
+            print("No communities found. Run: vault graph rebuild")
+            return
+        if args.text:
+            print(f"Communities ({len(communities)}):")
+            for c in communities:
+                stale_marker = " [STALE]" if c["stale"] else ""
+                print(f"\n  {c['label']}{stale_marker}  (atoms={c['atom_count']}, entities={len(c['entity_ids'])})")
+                if c.get("summary"):
+                    # First sentence of summary
+                    first_sent = c["summary"].split(".")[0][:100]
+                    print(f"    {first_sent}.")
+                findings = c.get("key_findings", [])
+                if findings and isinstance(findings, list):
+                    for f in findings[:2]:
+                        if isinstance(f, dict):
+                            print(f"    • {f.get('title', '')}: {f.get('detail', '')[:80]}")
+        else:
+            display = [{
+                "id": c["id"],
+                "label": c["label"],
+                "atom_count": c["atom_count"],
+                "entity_count": len(c["entity_ids"]),
+                "stale": bool(c["stale"]),
+                "summary_preview": (c.get("summary") or "")[:200],
+            } for c in communities]
+            out(display, args.text)
+
+    elif action == "community":
+        cid = getattr(args, "community_id", None)
+        if not cid:
+            die("graph community requires an ID")
+        from graph_store import get_community, get_entity
+        community = get_community(cid)
+        if not community:
+            die(f"Community not found: {cid}")
+        if args.text:
+            print(f"Community: {community['label']}")
+            print(f"  Atoms: {community['atom_count']}")
+            print(f"  Generated: {to_local_short(community['generated_at'])}")
+            if community["stale"]:
+                print("  ⚠ STALE — new atoms arrived since last summary")
+            # Show entities
+            ents = []
+            for eid in community["entity_ids"][:15]:
+                e = get_entity(eid)
+                if e:
+                    ents.append(f"{e['canonical_name']} [{e['entity_type']}]")
+            print(f"\n  Entities ({len(community['entity_ids'])}):")
+            for name in ents:
+                print(f"    • {name}")
+            # Summary
+            if community.get("summary"):
+                print(f"\n  Summary:")
+                for line in community["summary"].split("\n"):
+                    print(f"    {line}")
+            # Key findings
+            findings = community.get("key_findings", [])
+            if findings:
+                print(f"\n  Key Findings:")
+                for f in findings:
+                    if isinstance(f, dict):
+                        print(f"    • {f.get('title', '')}")
+                        print(f"      {f.get('detail', '')[:120]}")
+        else:
+            out(community, args.text)
+
+    elif action == "update":
+        # Manual Phase 1+2: entity resolution + co-occurrence
+        from graph_store import incremental_update, init_graph_db
+        import sqlite3 as _sqlite3
+        init_graph_db()
+
+        # Get all atom IDs not yet in L2 cursor
+        last_cursor = ""
+        try:
+            from graph_store import get_state
+            last_cursor = get_state("last_atom_cursor", "")
+        except Exception:
+            pass
+
+        atoms_conn = _sqlite3.connect(str(VAULT / "atoms.db"))
+        if last_cursor:
+            rows = atoms_conn.execute(
+                "SELECT id FROM atoms WHERE created_at > ? AND invalidated_by IS NULL "
+                "ORDER BY created_at ASC",
+                [last_cursor],
+            ).fetchall()
+        else:
+            rows = atoms_conn.execute(
+                "SELECT id FROM atoms WHERE invalidated_by IS NULL"
+            ).fetchall()
+        atoms_conn.close()
+
+        atom_ids = [r[0] for r in rows]
+        if not atom_ids:
+            print("No new atoms to process.")
+            return
+
+        result = incremental_update(atom_ids)
+        out(result, args.text)
+
+    elif action == "rebuild":
+        # Phase 3: community detection + LLM summaries
+        _graph_rebuild(args)
+
+    elif action == "normalize":
+        # Run entity resolver (Pass 1 + Pass 2 + interest tags)
+        import subprocess
+        resolver = VAULT / "scripts" / "entity_resolver.py"
+        extra = []
+        if getattr(args, "skip_llm", False):
+            extra.append("--skip-llm")
+        result = subprocess.run(
+            [sys.executable, str(resolver)] + extra,
+            text=True,
+        )
+        sys.exit(result.returncode)
+
+    elif action == "search":
+        query = getattr(args, "query", None) or getattr(args, "name", None)
+        if not query:
+            die("graph search requires a query (e.g. vault graph search 'radio streaming')")
+        top_k = getattr(args, "n", 5)
+        from graph_store import query_communities, embed_communities
+        # Embed any unembedded communities first
+        n_embedded = embed_communities()
+        if n_embedded:
+            print(f"Embedded {n_embedded} communities.")
+        results = query_communities(query, top_k=top_k)
+        if not results:
+            print("No community matches found.")
+            return
+        if args.text:
+            print(f"Community search: '{query}'\n")
+            for i, c in enumerate(results):
+                print(f"  [{i+1}] {c['label']}  (score={c['score']:.3f}, atoms={c['atom_count']})")
+                if c.get("summary"):
+                    print(f"    {c['summary'][:300]}...")
+                findings = c.get("key_findings", [])
+                for f in findings[:2]:
+                    if isinstance(f, dict):
+                        print(f"    • {f.get('title', '')}: {f.get('detail', '')[:80]}")
+                print()
+        else:
+            out([{
+                "label": c["label"],
+                "score": c["score"],
+                "atom_count": c["atom_count"],
+                "summary": c.get("summary"),
+                "key_findings": c.get("key_findings", []),
+            } for c in results], args.text)
+
+    elif action == "export":
+        # Regenerate communities browser HTML from current graph.db + atoms.db
+        _graph_export_html(args)
+
+    else:
+        die(f"Unknown graph action: {action}")
+
+
+def _graph_export_html(args):
+    """Generate/update communities.html with current graph.db data."""
+    sys.path.insert(0, str(VAULT / "scripts"))
+    import json as _json
+    import sqlite3 as _sqlite3
+    from graph_store import list_communities, get_entity, list_relations, list_interest_areas
+
+    DEST = Path(os.environ.get(
+        "COMMUNITIES_HTML",
+        "/home/agent/agent-stack/caddy/static/maps/communities.html"
+    ))
+
+    if not DEST.exists():
+        die(f"Template not found: {DEST}. communities.html must already exist.")
+
+    print("Loading communities from graph.db...")
+    communities = list_communities()
+    if not communities:
+        die("No communities found. Run: vault graph rebuild")
+
+    atoms_conn = _sqlite3.connect(str(VAULT / "atoms.db"))
+    atoms_conn.row_factory = _sqlite3.Row
+
+    interest_areas = {ia["id"]: ia["canonical_tag"] for ia in list_interest_areas()}
+    # Co-occurrence edges (weight >= 2 means seen in 2+ atoms)
+    all_cooccur = list_relations(min_weight=2.0)
+    # Typed semantic edges (all, no weight filter — they're all weight=1 from extractor)
+    all_typed = [r for r in list_relations(min_weight=1.0) if r["relation_type"] != "related_to"]
+
+    print(f"Building data for {len(communities)} communities...")
+    data = []
+    for c in communities:
+        entity_ids = set(c.get("entity_ids", []))
+        ia_tags = [interest_areas.get(ia_id, ia_id) for ia_id in c.get("interest_area_ids", [])]
+
+        # Entity details
+        entities = []
+        entity_atom_ids: set[str] = set()
+        for eid in c.get("entity_ids", []):
+            e = get_entity(eid)
+            if e:
+                entities.append({
+                    "name": e["canonical_name"],
+                    "type": e["entity_type"],
+                    "aliases": e.get("aliases", []),
+                    "atom_count": e.get("atom_count", 0),
+                })
+                entity_atom_ids.update(e.get("atom_ids", []))
+
+        # Co-occurrence edges within this community (weight = #shared atoms)
+        cooccur_rels = [
+            {"src": r["src_name"], "tgt": r["tgt_name"], "weight": r["weight"], "type": "related_to"}
+            for r in all_cooccur
+            if r["source_entity"] in entity_ids and r["target_entity"] in entity_ids
+        ]
+        # Typed semantic edges — include any edge where at least one endpoint is in this community
+        typed_rels = [
+            {
+                "src": r["src_name"], "tgt": r["tgt_name"],
+                "weight": r["weight"], "type": r["relation_type"],
+                "description": r.get("description") or "",
+                "atom_count": len(r.get("atom_ids") or []),
+            }
+            for r in all_typed
+            if r["source_entity"] in entity_ids or r["target_entity"] in entity_ids
+        ]
+        # Deduplicate typed_rels (src+tgt+type)
+        seen = set()
+        deduped_typed = []
+        for r in typed_rels:
+            k = (r["src"], r["tgt"], r["type"])
+            if k not in seen:
+                seen.add(k)
+                deduped_typed.append(r)
+        rels = cooccur_rels  # legacy field kept for backward compat
+
+        # Source atoms (up to 25)
+        atoms = []
+        if entity_atom_ids:
+            placeholders = ",".join("?" * len(entity_atom_ids))
+            atom_rows = atoms_conn.execute(
+                f"SELECT id, content, atom_type, project, time_first, topic FROM atoms "
+                f"WHERE id IN ({placeholders}) AND invalidated_by IS NULL "
+                f"ORDER BY time_first DESC LIMIT 25",
+                list(entity_atom_ids),
+            ).fetchall()
+            for a in atom_rows:
+                atoms.append({
+                    "content": a["content"],
+                    "type": a["atom_type"],
+                    "project": a["project"] or "",
+                    "date": (a["time_first"] or "")[:10],
+                    "topic": a["topic"] or "",
+                })
+
+        data.append({
+            "id": c["id"],
+            "label": c["label"],
+            "summary": c.get("summary") or "",
+            "key_findings": c.get("key_findings") or [],
+            "genesis": c.get("genesis") or None,
+            "evolution": c.get("evolution") or None,
+            "current_state": c.get("current_state") or None,
+            "open_threads": c.get("open_threads") or [],
+            "atom_count": c["atom_count"],
+            "time_first": (c.get("time_first") or "")[:10],
+            "time_last": (c.get("time_last") or "")[:10],
+            "interest_areas": ia_tags,
+            "entities": entities,
+            "relations": rels,           # co-occurrence (weight >= 2)
+            "typed_rels": deduped_typed, # semantic typed edges
+            "atoms": atoms,
+        })
+
+    atoms_conn.close()
+
+    # Inject new DATA into the HTML file (replace the const DATA = [...]; block)
+    # Use position-based replacement: find "const DATA = [" ... "];"
+    html = DEST.read_text()
+    data_json = _json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    new_block = f"const DATA = {data_json};"
+    START_MARKER = "const DATA = ["
+    END_MARKER = "];"
+    start = html.find(START_MARKER)
+    if start == -1:
+        die("Could not find 'const DATA = [' in HTML.")
+    # Find the matching ]; after start
+    end = html.find(END_MARKER, start)
+    if end == -1:
+        die("Could not find '};' terminating DATA block in HTML.")
+    end += len(END_MARKER)  # include the ]; in the replacement range
+    updated = html[:start] + new_block + html[end:]
+    DEST.write_text(updated)
+    print(f"Exported {len(data)} communities to {DEST}")
+    out({"communities_exported": len(data), "dest": str(DEST)}, args.text)
+
+
+def _graph_rebuild(args):
+    """Phase 3+4: Community detection + LLM summaries."""
+    sys.path.insert(0, str(VAULT / "scripts"))
+    import json as _json
+    import subprocess
+    import shutil as _shutil
+    from graph_store import (
+        detect_communities, upsert_community, list_interest_areas,
+        get_entity, list_relations, set_state, get_state,
+    )
+
+    # Resolve claude binary once outside the loop
+    _NVM_BIN = Path.home() / ".nvm/versions/node/v20.20.0/bin"
+    _claude_bin = (
+        os.environ.get("CLAUDE_BIN")
+        or _shutil.which("claude")
+        or str(_NVM_BIN / "claude")
+    )
+    _claude_env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+    # Clear existing communities before rebuild (they're fully derived, always regenerable)
+    import sqlite3 as _sqlite3
+    _graph_conn = _sqlite3.connect(str(VAULT / "graph.db"))
+    _graph_conn.execute("DELETE FROM communities")
+    _graph_conn.commit()
+    _graph_conn.close()
+    print("Cleared existing communities.")
+
+    # Load atoms db for content retrieval
+    atoms_conn = _sqlite3.connect(str(VAULT / "atoms.db"))
+    atoms_conn.row_factory = _sqlite3.Row
+
+    print("Detecting communities via label propagation...")
+    raw_communities = detect_communities()
+    print(f"  Found {len(raw_communities)} communities")
+
+    # Filter singletons
+    meaningful = [c for c in raw_communities if c["size"] >= 2]
+    print(f"  Meaningful (2+ entities): {len(meaningful)}")
+
+    # Load interest areas for tag matching
+    interest_areas = list_interest_areas()
+
+    now = datetime.now(timezone.utc).isoformat()
+    total_written = 0
+
+    for ci, community in enumerate(meaningful):
+        entity_ids = community["entity_ids"]
+        entity_names = community["entity_names"]
+
+        # Get all atoms for this community's entities
+        # Find atoms that mention any of these entities
+        entity_atom_ids: set[str] = set()
+        for eid in entity_ids:
+            e = get_entity(eid)
+            if e and e.get("atom_ids"):
+                entity_atom_ids.update(e["atom_ids"])
+
+        if not entity_atom_ids:
+            continue
+
+        atom_ids_list = list(entity_atom_ids)
+        placeholders = ",".join("?" * len(atom_ids_list))
+        atom_rows = atoms_conn.execute(
+            f"SELECT id, content, atom_type, project, time_first FROM atoms "
+            f"WHERE id IN ({placeholders}) AND invalidated_by IS NULL "
+            f"ORDER BY time_first DESC",
+            atom_ids_list,
+        ).fetchall()
+
+        if not atom_rows:
+            continue
+
+        # Time range
+        time_last = atom_rows[0]["time_first"]
+        time_first = atom_rows[-1]["time_first"]
+
+        # Get relations within community
+        eid_set = set(entity_ids)
+        all_rels = list_relations(min_weight=2.0)
+        internal_rels = [
+            r for r in all_rels
+            if r["source_entity"] in eid_set and r["target_entity"] in eid_set
+        ]
+
+        # Match interest areas
+        ia_ids = []
+        for ia in interest_areas:
+            ia_atom_ids = set(ia.get("atom_ids", []))
+            if ia_atom_ids & entity_atom_ids:
+                ia_ids.append(ia["id"])
+
+        # Generate community summary via Haiku
+        print(f"  [{ci+1}/{len(meaningful)}] Generating summary for community with entities: "
+              f"{', '.join(entity_names[:5])}{'...' if len(entity_names) > 5 else ''}",
+              end=" ", flush=True)
+
+        atom_content = "\n".join(
+            f"- [{a['atom_type']}] {a['content']}"
+            for a in atom_rows[:20]  # cap at 20 atoms per community
+        )
+        rel_content = "\n".join(
+            f"- {r['src_name']} → {r['tgt_name']} ({r['relation_type']}, strength={r['weight']:.0f})"
+            for r in internal_rels[:10]
+        )
+
+        prompt = f"""You are writing a Map of Content for a knowledge cluster in a personal memory system.
+
+Entities in this cluster: {', '.join(entity_names)}
+{f'Key relations:{chr(10)}{rel_content}' if rel_content else ''}
+
+Source memories (newest first):
+{atom_content}
+
+Generate a structured summary with temporal arc analysis. Return JSON only:
+{{
+  "label": "5-word-max cluster label",
+  "summary": "2-3 paragraph overview: what this cluster is about and its current state",
+  "key_findings": [{{"title": "...", "detail": "..."}}],
+  "genesis": "1-2 sentences: how this topic/project began or was first encountered",
+  "evolution": "1-2 sentences: how it has changed or grown over time (what shifted, what was learned)",
+  "current_state": "1-2 sentences: where things stand right now — active, dormant, resolved, in-flight",
+  "open_threads": ["specific open question or next step 1", "open question 2", "open question 3"]
+}}
+
+Rules:
+- key_findings: 3-5 items, each a concrete insight or decision made
+- open_threads: 2-4 items max, specific enough to be actionable
+- If the memories span only 1 day or have no clear evolution, set evolution to null
+- Return valid JSON only, no prose outside the JSON"""
+
+        try:
+            proc = subprocess.run(
+                [_claude_bin, "-p", "--model", DEFAULT_MODEL, prompt],
+                capture_output=True, text=True, timeout=120, env=_claude_env,
+            )
+            raw = proc.stdout.strip()
+        except (subprocess.TimeoutExpired, Exception) as e:
+            print(f"FAILED ({e})")
+            continue
+
+        import re as _re
+        raw = _re.sub(r"```(?:json)?\s*", "", raw).replace("```", "").strip()
+        m = _re.search(r"\{.*\}", raw, _re.DOTALL)
+        summary_data = None
+        if m:
+            try:
+                summary_data = _json.loads(m.group(0))
+            except _json.JSONDecodeError:
+                pass
+
+        if not summary_data:
+            label = f"Cluster: {entity_names[0]}"
+            summary_text = None
+            key_findings = []
+            genesis = None
+            evolution = None
+            current_state = None
+            open_threads = []
+            print("(no LLM summary)")
+        else:
+            label = summary_data.get("label", f"Cluster: {entity_names[0]}")
+            summary_text = summary_data.get("summary", "")
+            key_findings = summary_data.get("key_findings", [])
+            genesis = summary_data.get("genesis") or None
+            evolution = summary_data.get("evolution") or None
+            current_state = summary_data.get("current_state") or None
+            open_threads = summary_data.get("open_threads") or []
+            if isinstance(open_threads, str):
+                open_threads = [open_threads]
+            print(f"'{label}'")
+
+        # Embed summary for semantic search
+        summary_emb = None
+        if summary_text and not args.skip_llm:
+            try:
+                from sentence_transformers import SentenceTransformer as _ST
+                if not hasattr(_graph_rebuild, "_embed_model"):
+                    _graph_rebuild._embed_model = _ST("all-MiniLM-L6-v2")
+                summary_emb = _graph_rebuild._embed_model.encode(
+                    [summary_text], normalize_embeddings=True, show_progress_bar=False
+                )[0]
+            except Exception:
+                pass
+
+        cid = upsert_community(
+            label=label,
+            entity_ids=entity_ids,
+            interest_area_ids=ia_ids,
+            atom_count=len(atom_rows),
+            summary=summary_text,
+            key_findings=key_findings,
+            time_first=time_first,
+            time_last=time_last,
+            summary_embedding=summary_emb,
+            genesis=genesis,
+            evolution=evolution,
+            current_state=current_state,
+            open_threads=open_threads,
+        )
+        total_written += 1
+
+    atoms_conn.close()
+    set_state("last_community_rebuild", now)
+    set_state("atoms_since_rebuild", "0")
+
+    print(f"\nRebuild complete: {total_written} communities written")
+    result = {"communities_written": total_written, "total_detected": len(raw_communities)}
+    out(result, args.text)
+
+
+# ── Memory Lab ─────────────────────────────────────────────────────────────
+
+LAB_DIR = VAULT / "experiments"
+SNAP_DIR = VAULT / "snapshots"
+LAB_HTML = Path("/home/agent/agent-stack/caddy/static/maps/memory-lab.html")
+
+def cmd_lab(args):
+    """Memory Lab — fork, run, compare, grade experiments on graph.db."""
+    import json as _json
+    import shutil as _shutil
+    import sqlite3 as _sqlite3
+    from datetime import datetime, timezone
+
+    action = getattr(args, "lab_action", None) or "ls"
+    LAB_DIR.mkdir(exist_ok=True)
+
+    def _now():
+        return datetime.now(timezone.utc).isoformat()
+
+    def _list_experiments():
+        exps = []
+        for d in sorted(LAB_DIR.iterdir()):
+            meta_f = d / "meta.json"
+            if d.is_dir() and meta_f.exists():
+                try:
+                    m = _json.loads(meta_f.read_text())
+                    m["_dir"] = d.name
+                    exps.append(m)
+                except Exception:
+                    pass
+        return exps
+
+    def _find_exp(name):
+        """Find experiment dir by slug or prefix."""
+        for d in sorted(LAB_DIR.iterdir()):
+            if d.is_dir() and (d.name == name or d.name.endswith(f"-{name}") or name in d.name):
+                return d
+        return None
+
+    # ── ls ──────────────────────────────────────────────────────────────────
+    if action == "ls":
+        exps = _list_experiments()
+        if not exps:
+            print("No experiments yet. Run: vault lab new <name>")
+            return
+        print(f"Memory Lab — {len(exps)} experiment(s)\n")
+        for e in exps:
+            mode_marker = "🔬" if e.get("mode") == "official" else "🧪"
+            status = e.get("status", "created")
+            grade = e.get("grade")
+            grade_str = f"  grade={grade}" if grade else ""
+            print(f"  {mode_marker} {e['_dir']:35s}  [{status}]{grade_str}")
+            if e.get("hypothesis"):
+                print(f"     {e['hypothesis'][:80]}")
+        return
+
+    # ── new ─────────────────────────────────────────────────────────────────
+    elif action == "new":
+        name = getattr(args, "exp_name", None)
+        if not name:
+            die("vault lab new requires a name")
+        mode = getattr(args, "mode", "play") or "play"
+        hypothesis = getattr(args, "hypothesis", None) or ""
+
+        # Find next sequence number
+        existing = [d.name for d in LAB_DIR.iterdir() if d.is_dir()]
+        nums = []
+        for e in existing:
+            try:
+                nums.append(int(e.split("-")[0]))
+            except (ValueError, IndexError):
+                pass
+        seq = str(max(nums) + 1).zfill(3) if nums else "001"
+        slug = f"{seq}-{name}"
+        exp_dir = LAB_DIR / slug
+        exp_dir.mkdir()
+        (exp_dir / "results").mkdir()
+
+        # Fork graph.db — record which snapshot we forked from
+        baseline = VAULT / "graph.db"
+        if not baseline.exists():
+            die("No graph.db baseline found. Run vault graph rebuild first.")
+        # Resolve symlink to get actual snapshot name (if snapshot store is active)
+        if baseline.is_symlink():
+            forked_from = baseline.resolve().name
+        else:
+            forked_from = "graph.db (pre-snapshot)"
+        _shutil.copy2(str(baseline.resolve() if baseline.is_symlink() else baseline),
+                      str(exp_dir / "graph.db"))
+
+        # Write meta
+        meta = {
+            "slug": slug,
+            "name": name,
+            "mode": mode,
+            "hypothesis": hypothesis,
+            "status": "created",
+            "forked_from": forked_from,
+            "created_at": _now(),
+            "grade": None,
+            "grade_notes": "",
+            "promoted": False,
+        }
+        (exp_dir / "meta.json").write_text(_json.dumps(meta, indent=2))
+
+        # Write empty run.py scaffold
+        run_scaffold = f'''"""
+Experiment: {slug}
+Hypothesis: {hypothesis or "(fill in)"}
+Mode: {mode}
+
+Edit this script to implement the experiment.
+graph.db is at: {exp_dir}/graph.db  (forked from baseline)
+atoms.db is at: {VAULT}/atoms.db    (shared, read-only)
+
+Run with: vault lab run {name}
+"""
+import sys
+from pathlib import Path
+
+VAULT = Path("{VAULT}")
+EXP_DIR = Path("{exp_dir}")
+GRAPH_DB = EXP_DIR / "graph.db"
+ATOMS_DB = VAULT / "atoms.db"
+
+sys.path.insert(0, str(VAULT / "scripts"))
+
+
+def run():
+    print(f"Running experiment: {slug}")
+    # TODO: implement experiment
+    # Import graph_store pointing at EXP_DIR/graph.db
+    # Make changes, measure, write results to EXP_DIR/results/metrics.json
+
+
+if __name__ == "__main__":
+    run()
+'''
+        (exp_dir / "run.py").write_text(run_scaffold)
+
+        # Write empty notes
+        notes = f"""# {slug}
+
+## Hypothesis
+{hypothesis or "(fill in)"}
+
+## Method
+(describe what the experiment changes)
+
+## Results
+(fill in after running)
+
+## Grade
+(fill in after evaluation)
+"""
+        (exp_dir / "results" / "notes.md").write_text(notes)
+
+        print(f"Created experiment: {slug}")
+        print(f"  Dir:  {exp_dir}")
+        print(f"  Mode: {mode}")
+        if hypothesis:
+            print(f"  Hypothesis: {hypothesis}")
+        print(f"\n  Edit:  {exp_dir}/run.py")
+        print(f"  Then:  vault lab run {name}")
+        return
+
+    # ── run ─────────────────────────────────────────────────────────────────
+    elif action == "run":
+        name = getattr(args, "exp_name", None)
+        if not name:
+            die("vault lab run requires an experiment name")
+        exp_dir = _find_exp(name)
+        if not exp_dir:
+            die(f"Experiment not found: {name}")
+
+        meta_f = exp_dir / "meta.json"
+        meta = _json.loads(meta_f.read_text())
+
+        print(f"Running: {exp_dir.name}")
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, str(exp_dir / "run.py")],
+            cwd=str(exp_dir),
+        )
+
+        meta["status"] = "ran" if result.returncode == 0 else "failed"
+        meta["last_run"] = _now()
+        meta_f.write_text(_json.dumps(meta, indent=2))
+
+        if result.returncode != 0:
+            print(f"Experiment failed (exit {result.returncode})")
+        else:
+            print(f"Done. Results in: {exp_dir}/results/")
+            print(f"Next: vault lab compare {name}")
+        return
+
+    # ── compare ─────────────────────────────────────────────────────────────
+    elif action == "compare":
+        name = getattr(args, "exp_name", None)
+        if not name:
+            die("vault lab compare requires an experiment name")
+        exp_dir = _find_exp(name)
+        if not exp_dir:
+            die(f"Experiment not found: {name}")
+
+        print(f"Comparing: {exp_dir.name} vs baseline\n")
+
+        def _graph_stats(db_path):
+            conn = _sqlite3.connect(str(db_path))
+            conn.row_factory = _sqlite3.Row
+            stats = {}
+            stats["entities"] = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+            stats["relations"] = conn.execute("SELECT COUNT(*) FROM relations").fetchone()[0]
+            stats["communities"] = conn.execute("SELECT COUNT(*) FROM communities").fetchone()[0]
+            stats["avg_weight"] = conn.execute("SELECT AVG(weight) FROM relations").fetchone()[0] or 0
+            stats["max_weight"] = conn.execute("SELECT MAX(weight) FROM relations").fetchone()[0] or 0
+            stats["rel_by_type"] = {
+                r[0]: r[1] for r in conn.execute(
+                    "SELECT relation_type, COUNT(*) FROM relations GROUP BY relation_type ORDER BY COUNT(*) DESC"
+                ).fetchall()
+            }
+            # Top 10 edges by weight (all types, weight >= 2 to filter noise)
+            stats["top_edges"] = [
+                {"src": r[0], "tgt": r[1], "type": r[2], "weight": r[3]}
+                for r in conn.execute(
+                    """SELECT e1.canonical_name, e2.canonical_name, r.relation_type, r.weight
+                       FROM relations r
+                       JOIN entities e1 ON r.source_entity=e1.id
+                       JOIN entities e2 ON r.target_entity=e2.id
+                       WHERE r.weight >= 2
+                       ORDER BY r.weight DESC LIMIT 10"""
+                ).fetchall()
+            ]
+            conn.close()
+            return stats
+
+        baseline_stats = _graph_stats(VAULT / "graph.db")
+        exp_stats = _graph_stats(exp_dir / "graph.db")
+
+        def _fmt(label, b, e):
+            diff = e - b
+            sign = "+" if diff > 0 else ""
+            return f"  {label:20s}  baseline={b:<8}  exp={e:<8}  ({sign}{diff:.2f})"
+
+        print("── Graph stats ──────────────────────────────────────")
+        print(_fmt("entities", baseline_stats["entities"], exp_stats["entities"]))
+        print(_fmt("relations", baseline_stats["relations"], exp_stats["relations"]))
+        print(_fmt("communities", baseline_stats["communities"], exp_stats["communities"]))
+        print(_fmt("avg_weight", round(baseline_stats["avg_weight"], 3), round(exp_stats["avg_weight"], 3)))
+        print(_fmt("max_weight", round(baseline_stats["max_weight"], 3), round(exp_stats["max_weight"], 3)))
+
+        print("\n── Relation types ───────────────────────────────────")
+        all_types = set(baseline_stats["rel_by_type"]) | set(exp_stats["rel_by_type"])
+        for t in sorted(all_types):
+            b = baseline_stats["rel_by_type"].get(t, 0)
+            e = exp_stats["rel_by_type"].get(t, 0)
+            diff = e - b
+            sign = "+" if diff > 0 else ""
+            marker = " ◀ changed" if diff != 0 else ""
+            print(f"  {t:20s}  {b:5d} → {e:5d}  ({sign}{diff}){marker}")
+
+        print("\n── Top weighted edges (experiment) ──────────────────")
+        for r in exp_stats["top_edges"]:
+            print(f"  [{r['type']:15s}] w={r['weight']:.2f}  {r['src']} → {r['tgt']}")
+
+        # Write comparison to results
+        import json as _json2
+        comparison = {
+            "baseline": baseline_stats,
+            "experiment": exp_stats,
+            "compared_at": _now(),
+        }
+        (exp_dir / "results" / "comparison.json").write_text(
+            _json2.dumps(comparison, indent=2)
+        )
+        print(f"\nComparison saved to: {exp_dir}/results/comparison.json")
+        return
+
+    # ── grade ───────────────────────────────────────────────────────────────
+    elif action == "grade":
+        name = getattr(args, "exp_name", None)
+        if not name:
+            die("vault lab grade requires an experiment name")
+        exp_dir = _find_exp(name)
+        if not exp_dir:
+            die(f"Experiment not found: {name}")
+
+        grade = getattr(args, "grade_value", None)
+        notes = getattr(args, "grade_notes", None)
+        if not grade:
+            die("vault lab grade requires --grade (better|same|worse|promising)")
+
+        meta_f = exp_dir / "meta.json"
+        meta = _json.loads(meta_f.read_text())
+        meta["grade"] = grade
+        meta["grade_notes"] = notes or ""
+        meta["graded_at"] = _now()
+        meta["status"] = "graded"
+        meta_f.write_text(_json.dumps(meta, indent=2))
+
+        print(f"Graded {exp_dir.name}: {grade}")
+        if notes:
+            print(f"  Notes: {notes}")
+        if grade == "better":
+            print(f"\n  To promote to baseline: vault lab promote {name}")
+        return
+
+    # ── promote ─────────────────────────────────────────────────────────────
+    elif action == "promote":
+        name = getattr(args, "exp_name", None)
+        if not name:
+            die("vault lab promote requires an experiment name")
+        exp_dir = _find_exp(name)
+        if not exp_dir:
+            die(f"Experiment not found: {name}")
+
+        meta_f = exp_dir / "meta.json"
+        meta = _json.loads(meta_f.read_text())
+
+        if meta.get("grade") not in ("better", "promising"):
+            grade = meta.get("grade", "ungraded")
+            print(f"Warning: experiment grade is '{grade}' — are you sure?")
+            confirm = input("Promote anyway? [y/N] ").strip().lower()
+            if confirm != "y":
+                print("Aborted.")
+                return
+
+        # Ensure snapshot store is initialised (migration happens inside cmd_snap)
+        # We replicate the snap logic inline to avoid re-parsing args
+        import sys as _sys
+        SNAP_DIR.mkdir(exist_ok=True)
+        REGISTRY = SNAP_DIR / "registry.json"
+
+        def _snap_load():
+            if REGISTRY.exists():
+                try:
+                    return _json.loads(REGISTRY.read_text())
+                except Exception:
+                    pass
+            return {"snapshots": [], "active": None}
+
+        def _snap_save(reg):
+            REGISTRY.write_text(_json.dumps(reg, indent=2))
+
+        def _snap_stats_inline(db_path):
+            try:
+                conn = _sqlite3.connect(str(db_path))
+                e = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+                r = conn.execute("SELECT COUNT(*) FROM relations").fetchone()[0]
+                c = conn.execute("SELECT COUNT(*) FROM communities").fetchone()[0]
+                conn.close()
+                return {"entities": e, "relations": r, "communities": c}
+            except Exception:
+                return {"entities": "?", "relations": "?", "communities": "?"}
+
+        # Migrate graph.db → symlink if not already done
+        graph_db = VAULT / "graph.db"
+        if not graph_db.is_symlink() and graph_db.exists():
+            from datetime import datetime as _dt, timezone as _tz
+            today = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+            snap_name0 = f"baseline-{today}.db"
+            snap_path0 = SNAP_DIR / snap_name0
+            _shutil.copy2(str(graph_db), str(snap_path0))
+            graph_db.unlink()
+            graph_db.symlink_to(snap_path0)
+            reg0 = _snap_load()
+            stats0 = _snap_stats_inline(snap_path0)
+            reg0["snapshots"].append({
+                "name": snap_name0, "created_at": _now(), "source": "migration",
+                "experiment": None, "grade": None,
+                "notes": "Initial baseline — auto-migrated on promote",
+                **stats0,
+            })
+            reg0["active"] = snap_name0
+            _snap_save(reg0)
+            print(f"[snap] Migrated graph.db → snapshots/{snap_name0}")
+
+        # Create a named snapshot from the experiment's graph.db
+        snap_name = f"{exp_dir.name}.db"
+        snap_path = SNAP_DIR / snap_name
+        _shutil.copy2(str(exp_dir / "graph.db"), str(snap_path))
+
+        # Register the new snapshot
+        reg = _snap_load()
+        stats = _snap_stats_inline(snap_path)
+        reg["snapshots"].append({
+            "name": snap_name,
+            "created_at": _now(),
+            "source": "experiment",
+            "experiment": exp_dir.name,
+            "grade": meta.get("grade"),
+            "notes": meta.get("grade_notes", ""),
+            **stats,
+        })
+        _snap_save(reg)
+
+        # Atomic symlink checkout
+        tmp = VAULT / "graph.db.tmp"
+        if tmp.exists() or tmp.is_symlink():
+            tmp.unlink()
+        tmp.symlink_to(snap_path)
+        tmp.rename(graph_db)
+
+        reg = _snap_load()
+        reg["active"] = snap_name
+        _snap_save(reg)
+
+        # Update experiment meta
+        meta["promoted"] = True
+        meta["promoted_at"] = _now()
+        meta["status"] = "promoted"
+        meta["snapshot"] = snap_name
+        meta_f.write_text(_json.dumps(meta, indent=2))
+
+        print(f"Promoted {exp_dir.name} → snapshots/{snap_name}")
+        print(f"  Entities:    {stats['entities']}")
+        print(f"  Relations:   {stats['relations']}")
+        print(f"  Communities: {stats['communities']}")
+        print()
+        print("Roll back any time:  vault snap rollback")
+        print("View all snapshots:  vault snap ls")
+        print("Refresh browser:     vault graph export --text")
+        return
+
+    # ── status ──────────────────────────────────────────────────────────────
+    elif action == "status":
+        name = getattr(args, "exp_name", None)
+        if not name:
+            die("vault lab status requires an experiment name")
+        exp_dir = _find_exp(name)
+        if not exp_dir:
+            die(f"Experiment not found: {name}")
+        meta = _json.loads((exp_dir / "meta.json").read_text())
+        out(meta, args.text)
+        return
+
+    # ── eval ────────────────────────────────────────────────────────────────
+    elif action == "eval":
+        name = getattr(args, "exp_name", None)
+        if not name:
+            die("vault lab eval requires an experiment name")
+        exp_dir = _find_exp(name)
+        if not exp_dir:
+            die(f"Experiment not found: {name}")
+
+        import subprocess as _sub
+        import sqlite3 as _eval_sqlite
+
+        ATOMS_DB = VAULT / "atoms.db"
+        meta = _json.loads((exp_dir / "meta.json").read_text())
+        metrics_f = exp_dir / "results" / "metrics.json"
+        if not metrics_f.exists():
+            die(f"No metrics.json found — run the experiment first: vault lab run {name}")
+
+        metrics = _json.loads(metrics_f.read_text())
+        exp_graph = exp_dir / "graph.db"
+
+        # ── Build experiment summary for challenger ──────────────────────────
+        hypothesis = meta.get("hypothesis", "(no hypothesis)")
+        baseline = metrics.get("baseline", {})
+        post = metrics.get("post", {})
+        top_results = []
+
+        # Try bridges report (exp-002 style)
+        bridges_f = exp_dir / "results" / "bridges.md"
+        top_bridges = metrics.get("top_bridges", [])
+        top_updates = metrics.get("top_updates", [])
+
+        if top_bridges:
+            for b in top_bridges[:8]:
+                top_results.append(
+                    f"  score={b['score']:.4f}  {b['community_a'][:40]} ↔ {b['community_b'][:40]}"
+                )
+        elif top_updates:
+            # Resolve entity IDs to canonical names using the experiment's graph.db
+            def _resolve_name(val, graph_conn):
+                """Return canonical name for val — handles both UUIDs and plain names."""
+                if not val or val == '?':
+                    return val
+                row = graph_conn.execute(
+                    "SELECT canonical_name FROM entities WHERE id=? OR id LIKE ?",
+                    (val, val + '%')
+                ).fetchone()
+                return row[0] if row else val
+            try:
+                _gconn = _sqlite3.connect(str(exp_dir / "graph.db"))
+                _gconn.row_factory = _sqlite3.Row
+                for u in top_updates[:8]:
+                    na = _resolve_name(u.get('entity_a','?'), _gconn)
+                    nb = _resolve_name(u.get('entity_b','?'), _gconn)
+                    top_results.append(
+                        f"  {na[:30]} ↔ {nb[:30]}  "
+                        f"Δw={u.get('delta','?')}  coact={u.get('coactivations','?')}"
+                    )
+                _gconn.close()
+            except Exception:
+                for u in top_updates[:8]:
+                    top_results.append(
+                        f"  {u.get('entity_a','?')[:25]} ↔ {u.get('entity_b','?')[:25]}  "
+                        f"Δw={u.get('delta','?')}  coact={u.get('coactivations','?')}"
+                    )
+
+        results_summary = "\n".join(top_results) if top_results else "(no top results)"
+
+        # Metrics delta summary — handles both flat {k:v} and nested {section:{k:v}}
+        delta_lines = []
+        def _flatten_metrics(d, prefix=""):
+            """Yield (label, baseline_val, post_val) for all numeric fields."""
+            if not isinstance(d, dict):
+                return
+            for k, bv in d.items():
+                full_key = f"{prefix}.{k}" if prefix else k
+                if isinstance(bv, dict):
+                    yield from _flatten_metrics(bv, full_key)
+                elif isinstance(bv, (int, float)):
+                    pv = post
+                    for part in full_key.split("."):
+                        pv = pv.get(part, {}) if isinstance(pv, dict) else "?"
+                    if isinstance(pv, (int, float)) and bv != pv:
+                        yield full_key, bv, pv
+        for key, bv, pv in _flatten_metrics(baseline):
+            delta_lines.append(f"  {key}: {bv} → {pv} (Δ{pv-bv:+.2f})")
+        metrics_summary = "\n".join(delta_lines) if delta_lines else "(no significant deltas)"
+
+        # ── Round 1: Challenger ──────────────────────────────────────────────
+        print(f"[eval] Round 1 — Challenger identifying edge cases...")
+        challenger_prompt = f"""You are a thoughtful challenger evaluating a memory architecture experiment. Assume the experiment is sound. Your job is to find the 3-5 most interesting edge cases, surprising results, or areas that deserve a closer look before the human decides to promote this to production.
+
+EXPERIMENT: {meta['slug']}
+HYPOTHESIS: {hypothesis}
+FORKED FROM: {meta.get('forked_from', '?')}
+
+TOP RESULTS:
+{results_summary}
+
+METRICS DELTAS:
+{metrics_summary}
+
+Produce 4 specific, answerable challenges. Each challenge must:
+- Name a specific result (bridge, entity pair, or metric) to examine
+- Ask a falsifiable question about it
+- Specify entity_a and entity_b (the two entities to look up in the graph)
+- Specify probe type: "atoms" (find shared atoms), "coactivation" (count shared sessions), or "community" (get full community summaries)
+
+Respond with ONLY valid JSON, no other text:
+{{
+  "challenges": [
+    {{
+      "id": 1,
+      "title": "short title",
+      "question": "specific falsifiable question",
+      "entity_a": "exact entity name from results",
+      "entity_b": "exact entity name from results",
+      "probe": "atoms|coactivation|community",
+      "community_a": "community label if relevant",
+      "community_b": "community label if relevant"
+    }}
+  ]
+}}"""
+
+        r1 = _sub.run(
+            ["env", "-u", "ANTHROPIC_API_KEY", "claude", "-p", challenger_prompt],
+            capture_output=True, text=True, timeout=120
+        )
+        try:
+            challenges_raw = r1.stdout.strip()
+            # Strip markdown code fences if present
+            if challenges_raw.startswith("```"):
+                challenges_raw = "\n".join(
+                    l for l in challenges_raw.splitlines()
+                    if not l.startswith("```")
+                )
+            challenges_data = _json.loads(challenges_raw)
+            challenges = challenges_data.get("challenges", [])
+            print(f"[eval]   {len(challenges)} challenges generated")
+        except Exception as e:
+            print(f"[eval]   Warning: could not parse Round 1 JSON ({e}), using raw text")
+            challenges = []
+            challenges_raw_fallback = r1.stdout.strip()
+
+        # ── Round 2: Executor (pure Python, no LLM) ─────────────────────────
+        print(f"[eval] Round 2 — Executor gathering evidence...")
+        evidence_blocks = []
+
+        def _find_entity_id(name_str, conn):
+            """
+            Fuzzy find entity ID + canonical name.
+            Handles: exact name, UUID (full or truncated), partial name match.
+            """
+            if not name_str:
+                return None, name_str
+            name_lower = name_str.lower().strip()
+
+            # If it looks like a UUID (or truncated UUID), resolve by ID prefix
+            import re as _re
+            if _re.match(r'^[0-9a-f]{8}', name_lower):
+                row = conn.execute(
+                    "SELECT id, canonical_name FROM entities WHERE id LIKE ?",
+                    (name_str[:8] + '%',)
+                ).fetchone()
+                if row:
+                    return row[0], row[1]
+
+            # Exact canonical name match
+            row = conn.execute(
+                "SELECT id, canonical_name FROM entities WHERE lower(canonical_name)=?",
+                (name_lower,)
+            ).fetchone()
+            if row:
+                return row[0], row[1]
+
+            # Alias match
+            rows = conn.execute("SELECT id, canonical_name, aliases FROM entities").fetchall()
+            for r in rows:
+                try:
+                    aliases = [a.lower() for a in _json.loads(r[2] or "[]")]
+                    if name_lower in aliases:
+                        return r[0], r[1]
+                except Exception:
+                    pass
+
+            # Partial name match
+            row = conn.execute(
+                "SELECT id, canonical_name FROM entities WHERE lower(canonical_name) LIKE ?",
+                (f"%{name_lower}%",)
+            ).fetchone()
+            return (row[0], row[1]) if row else (None, name_str)
+
+        def _probe_atoms(eid_a, eid_b, name_a, name_b, atoms_conn):
+            """
+            Find atoms that mention both entities.
+            Strategy: fetch atoms mentioning each entity separately, intersect by id,
+            then fall back to union if intersection is empty. This handles JSON-stored
+            entity arrays where a dual LIKE fails due to case or spacing mismatches.
+            """
+            def _atoms_for(name):
+                """Return {atom_id: row} for atoms mentioning name (case-insensitive)."""
+                name_lower = name.lower()
+                # Try exact substring in JSON entities field
+                rows = atoms_conn.execute(
+                    "SELECT rowid, content, atom_type, topic, project, time_first, entities "
+                    "FROM atoms WHERE invalidated_by IS NULL AND lower(entities) LIKE ?",
+                    (f'%{name_lower}%',)
+                ).fetchall()
+                if rows:
+                    return {r[0]: r for r in rows}
+                # Fallback: search in content text
+                rows = atoms_conn.execute(
+                    "SELECT rowid, content, atom_type, topic, project, time_first, entities "
+                    "FROM atoms WHERE invalidated_by IS NULL AND lower(content) LIKE ?",
+                    (f'%{name_lower}%',)
+                ).fetchall()
+                return {r[0]: r for r in rows}
+
+            atoms_a = _atoms_for(name_a)
+            atoms_b = _atoms_for(name_b)
+
+            # Prefer intersection (atoms that mention both)
+            shared_ids = set(atoms_a.keys()) & set(atoms_b.keys())
+            if shared_ids:
+                result_rows = [atoms_a[i] for i in list(shared_ids)[:5]]
+            elif atoms_a or atoms_b:
+                # Fall back to union — show context for each entity separately
+                all_rows = list({**atoms_a, **atoms_b}.values())[:5]
+                result_rows = all_rows
+            else:
+                result_rows = []
+
+            return [{"content": r[1][:300], "type": r[2], "topic": r[3],
+                     "project": r[4], "date": r[5],
+                     "entities": r[6][:120] if r[6] else ""} for r in result_rows]
+
+        def _probe_coactivation(name_a, name_b, atoms_conn):
+            """Count sessions where both entities appeared."""
+            rows_a = atoms_conn.execute(
+                "SELECT session_ids FROM atoms WHERE entities LIKE ? AND invalidated_by IS NULL",
+                (f'%{name_a}%',)
+            ).fetchall()
+            rows_b = atoms_conn.execute(
+                "SELECT session_ids FROM atoms WHERE entities LIKE ? AND invalidated_by IS NULL",
+                (f'%{name_b}%',)
+            ).fetchall()
+            sessions_a = set()
+            sessions_b = set()
+            for r in rows_a:
+                try:
+                    sessions_a.update(_json.loads(r[0] or "[]"))
+                except Exception:
+                    pass
+            for r in rows_b:
+                try:
+                    sessions_b.update(_json.loads(r[0] or "[]"))
+                except Exception:
+                    pass
+            shared = sessions_a & sessions_b
+            return {"sessions_a": len(sessions_a), "sessions_b": len(sessions_b),
+                    "shared": len(shared), "overlap_pct": round(
+                        len(shared) / max(len(sessions_a), len(sessions_b), 1) * 100, 1
+                    )}
+
+        def _probe_community(label_a, label_b, graph_conn):
+            """Get full summaries for two communities by label."""
+            results = {}
+            for label, key in [(label_a, "a"), (label_b, "b")]:
+                if not label:
+                    continue
+                row = graph_conn.execute(
+                    "SELECT label, summary, genesis, current_state, open_threads FROM communities "
+                    "WHERE label LIKE ? LIMIT 1",
+                    (f"%{label[:20]}%",)
+                ).fetchone()
+                if row:
+                    results[key] = {
+                        "label": row[0], "summary": (row[1] or "")[:400],
+                        "genesis": row[2], "current_state": row[3],
+                        "open_threads": row[4]
+                    }
+            return results
+
+        if exp_graph.exists() and challenges:
+            g_conn = _eval_sqlite.connect(str(exp_graph))
+            g_conn.row_factory = _eval_sqlite.Row
+            a_conn = _eval_sqlite.connect(str(ATOMS_DB))
+            a_conn.row_factory = _eval_sqlite.Row
+
+            for ch in challenges:
+                eid_a, ename_a = _find_entity_id(ch.get("entity_a", ""), g_conn)
+                eid_b, ename_b = _find_entity_id(ch.get("entity_b", ""), g_conn)
+                probe = ch.get("probe", "atoms")
+
+                evidence = {"challenge_id": ch["id"], "entity_a": ename_a, "entity_b": ename_b}
+
+                if probe == "atoms":
+                    evidence["atoms"] = _probe_atoms(eid_a, eid_b, ename_a, ename_b, a_conn)
+                    evidence["atom_count"] = len(evidence["atoms"])
+                elif probe == "coactivation":
+                    evidence["coactivation"] = _probe_coactivation(ename_a, ename_b, a_conn)
+                elif probe == "community":
+                    evidence["communities"] = _probe_community(
+                        ch.get("community_a", ""), ch.get("community_b", ""), g_conn
+                    )
+
+                evidence_blocks.append(evidence)
+                print(f"[eval]   Challenge {ch['id']}: {probe} → "
+                      f"{evidence.get('atom_count', len(evidence.get('coactivation', evidence.get('communities', {}))))} results")
+
+            g_conn.close()
+            a_conn.close()
+
+        # ── Round 3: Verdict ─────────────────────────────────────────────────
+        print(f"[eval] Round 3 — Verdict on evidence...")
+
+        evidence_text = _json.dumps(evidence_blocks, indent=2)[:4000]  # cap context
+
+        verdict_prompt = f"""You are delivering a final evaluation of a memory architecture experiment to a human executive who will decide whether to promote it to production.
+
+EXPERIMENT: {meta['slug']}
+HYPOTHESIS: {hypothesis}
+
+CHALLENGES AND EVIDENCE:
+{_json.dumps([{**ch, "evidence": ev} for ch, ev in zip(challenges, evidence_blocks)], indent=2)[:5000]}
+
+TOP RESULTS SUMMARY:
+{results_summary}
+
+Deliver your verdict. For each challenge, rule on whether the evidence supports the claim, reveals an edge case, or shows a weakness. Then identify the 2-3 best examples that prove the experiment's value (Exhibit A), and the 2-3 most interesting edge cases.
+
+Respond with ONLY valid JSON:
+{{
+  "overall_verdict": "one sentence verdict",
+  "quality_score": 3.5,
+  "challenge_verdicts": [
+    {{
+      "challenge_id": 1,
+      "ruling": "valid|edge-case|spurious|inconclusive",
+      "finding": "what the evidence actually showed in 2 sentences"
+    }}
+  ],
+  "exhibit_a": [
+    {{
+      "title": "short punchy title",
+      "claim": "what this experiment uniquely enables",
+      "evidence": "concrete evidence snippet (quote atoms or metrics)",
+      "why_it_matters": "one sentence on value to the human"
+    }}
+  ],
+  "edge_cases": [
+    {{
+      "title": "short title",
+      "finding": "what's shaky or interesting",
+      "recommendation": "what to watch"
+    }}
+  ],
+  "open_questions": ["question 1", "question 2"],
+  "for_human": "2-3 sentence executive summary of what to look at before deciding"
+}}"""
+
+        r3 = _sub.run(
+            ["env", "-u", "ANTHROPIC_API_KEY", "claude", "-p", verdict_prompt],
+            capture_output=True, text=True, timeout=120
+        )
+        try:
+            verdict_raw = r3.stdout.strip()
+            if verdict_raw.startswith("```"):
+                verdict_raw = "\n".join(
+                    l for l in verdict_raw.splitlines()
+                    if not l.startswith("```")
+                )
+            verdict = _json.loads(verdict_raw)
+        except Exception as e:
+            print(f"[eval]   Warning: could not parse Round 3 JSON ({e})")
+            verdict = {
+                "overall_verdict": "Evaluation parse failed — see raw output",
+                "quality_score": None,
+                "challenge_verdicts": [],
+                "exhibit_a": [],
+                "edge_cases": [],
+                "open_questions": [],
+                "for_human": r3.stdout.strip()[:500],
+            }
+
+        # ── Write results ────────────────────────────────────────────────────
+        eval_result = {
+            "experiment": meta["slug"],
+            "eval_at": _now(),
+            "hypothesis": hypothesis,
+            "challenges": challenges,
+            "evidence": evidence_blocks,
+            "verdict": verdict,
+            "metrics_summary": {"baseline": baseline, "post": post},
+        }
+
+        results_dir = exp_dir / "results"
+        results_dir.mkdir(exist_ok=True)
+        (results_dir / "eval.json").write_text(_json.dumps(eval_result, indent=2))
+
+        # Write human-readable eval.md
+        md_lines = [
+            f"# Eval: {meta['slug']}",
+            f"\n**Verdict:** {verdict.get('overall_verdict', '?')}",
+            f"**Quality score:** {verdict.get('quality_score', '?')} / 5",
+            f"**Eval run:** {eval_result['eval_at'][:19]}",
+            "\n---\n",
+            "## Executive Summary\n",
+            verdict.get("for_human", ""),
+            "\n## Exhibit A — Why This Works\n",
+        ]
+        for ex in verdict.get("exhibit_a", []):
+            md_lines += [
+                f"### {ex.get('title', '?')}",
+                f"**Claim:** {ex.get('claim', '')}",
+                f"**Evidence:** {ex.get('evidence', '')}",
+                f"**Why it matters:** {ex.get('why_it_matters', '')}",
+                "",
+            ]
+        md_lines.append("## Edge Cases\n")
+        for ec in verdict.get("edge_cases", []):
+            md_lines += [
+                f"### {ec.get('title', '?')}",
+                ec.get("finding", ""),
+                f"*Watch:* {ec.get('recommendation', '')}",
+                "",
+            ]
+        md_lines.append("## Open Questions\n")
+        for q in verdict.get("open_questions", []):
+            md_lines.append(f"- {q}")
+        md_lines += ["\n## Challenge Verdicts\n"]
+        for cv in verdict.get("challenge_verdicts", []):
+            ch_match = next((c for c in challenges if c.get("id") == cv.get("challenge_id")), {})
+            ruling = cv.get("ruling", "?").upper()
+            ch_title = ch_match.get("title", "Challenge " + str(cv.get("challenge_id", "?")))
+            md_lines += [
+                f"**{ruling}** — {ch_title}",
+                cv.get("finding", ""),
+                "",
+            ]
+
+        (results_dir / "eval.md").write_text("\n".join(md_lines))
+
+        # Update meta
+        meta["eval_verdict"] = verdict.get("overall_verdict", "?")
+        meta["eval_score"] = verdict.get("quality_score")
+        meta["eval_at"] = eval_result["eval_at"]
+        (exp_dir / "meta.json").write_text(_json.dumps(meta, indent=2))
+
+        print(f"\n[eval] Done.")
+        print(f"  Verdict: {verdict.get('overall_verdict', '?')}")
+        print(f"  Score:   {verdict.get('quality_score', '?')} / 5")
+        print(f"  Output:  {results_dir}/eval.md")
+        print(f"\nRun: vault lab export  (to refresh lab.html)")
+        return
+
+    # ── export (generate lab-data.js for lab.html) ───────────────────────────
+    elif action == "export":
+        import sqlite3 as _exp_sqlite
+
+        def _snap_counts(db_path):
+            try:
+                conn = _exp_sqlite.connect(str(db_path))
+                e = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+                r = conn.execute("SELECT COUNT(*) FROM relations").fetchone()[0]
+                c = conn.execute("SELECT COUNT(*) FROM communities").fetchone()[0]
+                conn.close()
+                return {"entities": e, "relations": r, "communities": c}
+            except Exception:
+                return {}
+
+        # Load snapshot registry
+        snap_reg_f = SNAP_DIR / "registry.json"
+        snap_registry = _json.loads(snap_reg_f.read_text()) if snap_reg_f.exists() else {}
+
+        # Load all experiments
+        experiments = []
+        for d in sorted(LAB_DIR.iterdir()):
+            meta_f = d / "meta.json"
+            if not d.is_dir() or not meta_f.exists():
+                continue
+            try:
+                meta = _json.loads(meta_f.read_text())
+            except Exception:
+                continue
+
+            exp_data = {**meta}
+
+            # Attach metrics if available
+            metrics_f = d / "results" / "metrics.json"
+            if metrics_f.exists():
+                try:
+                    m = _json.loads(metrics_f.read_text())
+                    exp_data["metrics"] = {
+                        "baseline": m.get("baseline", {}),
+                        "post": m.get("post", {}),
+                        "top_bridges": m.get("top_bridges", [])[:6],
+                        "top_updates": m.get("top_updates", [])[:6],
+                        "params": m.get("params", {}),
+                        "sessions_processed": m.get("sessions_processed"),
+                        "pairs_above_threshold": m.get("pairs_above_threshold"),
+                        "edges_updated": m.get("edges_updated"),
+                        "edges_created": m.get("edges_created"),
+                        "bridges_found": m.get("post", {}).get("bridges_found"),
+                    }
+                except Exception:
+                    pass
+
+            # Attach eval if available
+            eval_f = d / "results" / "eval.json"
+            if eval_f.exists():
+                try:
+                    ev = _json.loads(eval_f.read_text())
+                    exp_data["eval"] = {
+                        "eval_at": ev.get("eval_at", ""),
+                        "verdict": ev.get("verdict", {}),
+                        "challenges": ev.get("challenges", []),
+                    }
+                except Exception:
+                    pass
+
+            # Attach exp graph stats
+            exp_graph = d / "graph.db"
+            if exp_graph.exists():
+                exp_data["graph_stats"] = _snap_counts(exp_graph)
+
+            experiments.append(exp_data)
+
+        data = {
+            "generated_at": _now(),
+            "active_snapshot": (VAULT / "graph.db").resolve().name if (VAULT / "graph.db").is_symlink() else None,
+            "snapshots": snap_registry.get("snapshots", []),
+            "experiments": experiments,
+        }
+
+        # Write to Caddy static dir
+        static_dir = Path("/home/agent/agent-stack/caddy/static/maps")
+        out_path = static_dir / "lab-data.js"
+        out_path.write_text(f"const LAB_DATA = {_json.dumps(data, indent=2)};\n")
+
+        # Bust the cache in lab.html by updating the version query param
+        lab_html = static_dir / "lab.html"
+        if lab_html.exists():
+            import re as _re
+            import time as _time
+            ts = str(int(_time.time()))
+            html = lab_html.read_text()
+            html = _re.sub(r'<script src="lab-data\.js[^"]*">', f'<script src="lab-data.js?v={ts}">', html)
+            lab_html.write_text(html)
+
+        print(f"Exported {len(experiments)} experiments → {out_path}")
+        print(f"View at: maps.calenwalshe.com/lab.html")
+        return
+
+    else:
+        die(f"Unknown lab action: {action}")
+
+
+# ── Snapshot store ─────────────────────────────────────────────────────────
+
+def cmd_snap(args):
+    """
+    Snapshot store — version control for graph.db.
+
+    graph.db is a symlink pointing to the active snapshot in vault/snapshots/.
+    All promote/rollback operations just repoint the symlink — instant, atomic, reversible.
+
+    Registry: snapshots/registry.json tracks all snapshots with metadata.
+    """
+    import json as _json
+    import shutil as _shutil
+    import sqlite3 as _sqlite3
+    from datetime import datetime, timezone
+
+    action = getattr(args, "snap_action", None) or "ls"
+    SNAP_DIR.mkdir(exist_ok=True)
+    REGISTRY = SNAP_DIR / "registry.json"
+
+    def _now():
+        return datetime.now(timezone.utc).isoformat()
+
+    def _load_registry() -> dict:
+        if REGISTRY.exists():
+            try:
+                return _json.loads(REGISTRY.read_text())
+            except Exception:
+                pass
+        return {"snapshots": [], "active": None}
+
+    def _save_registry(reg: dict):
+        REGISTRY.write_text(_json.dumps(reg, indent=2))
+
+    def _snap_stats(db_path) -> dict:
+        """Read entity/relation/community counts from a snapshot db."""
+        try:
+            conn = _sqlite3.connect(str(db_path))
+            e = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+            r = conn.execute("SELECT COUNT(*) FROM relations").fetchone()[0]
+            c = conn.execute("SELECT COUNT(*) FROM communities").fetchone()[0]
+            conn.close()
+            return {"entities": e, "relations": r, "communities": c}
+        except Exception:
+            return {"entities": "?", "relations": "?", "communities": "?"}
+
+    def _current_snap_name() -> str | None:
+        """Return the filename (not full path) of the currently active snapshot."""
+        graph_db = VAULT / "graph.db"
+        if graph_db.is_symlink():
+            target = graph_db.resolve()
+            return target.name
+        return None
+
+    def _migrate_to_symlink():
+        """
+        One-time migration: if graph.db is a regular file, move it into snapshots/
+        and replace with a symlink. Safe to call repeatedly — no-op if already done.
+        """
+        graph_db = VAULT / "graph.db"
+        if graph_db.is_symlink():
+            return  # already migrated
+
+        if not graph_db.exists():
+            return  # nothing to migrate
+
+        # Name the initial snapshot by date
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        snap_name = f"baseline-{today}.db"
+        snap_path = SNAP_DIR / snap_name
+
+        # Move graph.db → snapshots/baseline-{date}.db
+        _shutil.copy2(str(graph_db), str(snap_path))
+        graph_db.unlink()
+        graph_db.symlink_to(snap_path)
+
+        # Register in registry
+        reg = _load_registry()
+        stats = _snap_stats(snap_path)
+        reg["snapshots"].append({
+            "name": snap_name,
+            "created_at": _now(),
+            "source": "migration",
+            "experiment": None,
+            "grade": None,
+            "notes": "Initial baseline — migrated from flat graph.db",
+            **stats,
+        })
+        reg["active"] = snap_name
+        _save_registry(reg)
+        print(f"[snap] Migrated graph.db → snapshots/{snap_name} (symlink installed)")
+
+    # Always migrate on first use
+    _migrate_to_symlink()
+
+    # ── ls ──────────────────────────────────────────────────────────────────
+    if action == "ls":
+        reg = _load_registry()
+        snaps = reg.get("snapshots", [])
+        active = _current_snap_name()
+        if not snaps:
+            print("No snapshots yet. Run: vault snap create <name>")
+            return
+        print(f"{'':2}{'NAME':<35}{'ENTITIES':>9}{'RELS':>7}{'COMM':>6}  {'CREATED':<22}  SOURCE")
+        print("─" * 95)
+        for s in snaps:
+            marker = "▶ " if s["name"] == active else "  "
+            grade_tag = f" [{s['grade']}]" if s.get("grade") else ""
+            created = s.get("created_at", "")[:16].replace("T", " ")
+            source = s.get("source", "")
+            if s.get("experiment"):
+                source = f"exp:{s['experiment']}{grade_tag}"
+            print(f"{marker}{s['name']:<35}{s.get('entities','?'):>9}{s.get('relations','?'):>7}"
+                  f"{s.get('communities','?'):>6}  {created:<22}  {source}")
+        print()
+        print(f"Active: {active or '(none)'}")
+        return
+
+    # ── create ──────────────────────────────────────────────────────────────
+    elif action == "create":
+        name = getattr(args, "snap_name", None)
+        notes = getattr(args, "notes", "") or ""
+        if not name:
+            die("vault snap create requires a name (e.g. vault snap create post-rebuild)")
+
+        # Ensure .db extension
+        if not name.endswith(".db"):
+            name = f"{name}.db"
+
+        snap_path = SNAP_DIR / name
+        if snap_path.exists():
+            die(f"Snapshot already exists: {name}")
+
+        # Copy current graph.db (which is a symlink — we copy the target file)
+        graph_db = VAULT / "graph.db"
+        if not graph_db.exists():
+            die("No graph.db found. Run vault graph rebuild first.")
+
+        _shutil.copy2(str(graph_db.resolve()), str(snap_path))
+
+        reg = _load_registry()
+        stats = _snap_stats(snap_path)
+        reg["snapshots"].append({
+            "name": name,
+            "created_at": _now(),
+            "source": "manual",
+            "experiment": None,
+            "grade": None,
+            "notes": notes,
+            **stats,
+        })
+        _save_registry(reg)
+
+        print(f"Created snapshot: {name}")
+        for k, v in stats.items():
+            print(f"  {k}: {v}")
+        return
+
+    # ── checkout ─────────────────────────────────────────────────────────────
+    elif action == "checkout":
+        name = getattr(args, "snap_name", None)
+        if not name:
+            die("vault snap checkout requires a snapshot name")
+        if not name.endswith(".db"):
+            name = f"{name}.db"
+
+        snap_path = SNAP_DIR / name
+        if not snap_path.exists():
+            die(f"Snapshot not found: {name}\nRun 'vault snap ls' to see available snapshots.")
+
+        graph_db = VAULT / "graph.db"
+        old = _current_snap_name()
+
+        # Atomic symlink swap: create new symlink at temp path, rename over existing
+        tmp = VAULT / "graph.db.tmp"
+        if tmp.exists() or tmp.is_symlink():
+            tmp.unlink()
+        tmp.symlink_to(snap_path)
+        tmp.rename(graph_db)
+
+        reg = _load_registry()
+        reg["active"] = name
+        _save_registry(reg)
+
+        print(f"Checked out: {name}")
+        if old and old != name:
+            print(f"  Previous:  {old}")
+        stats = _snap_stats(snap_path)
+        print(f"  Entities:  {stats['entities']}")
+        print(f"  Relations: {stats['relations']}")
+        print(f"  Communities: {stats['communities']}")
+        return
+
+    # ── info ─────────────────────────────────────────────────────────────────
+    elif action == "info":
+        name = getattr(args, "snap_name", None)
+        reg = _load_registry()
+        active = _current_snap_name()
+
+        if not name:
+            # Show info for active snapshot
+            name = active
+        if not name:
+            die("No active snapshot and no name given.")
+        if not name.endswith(".db"):
+            name = f"{name}.db"
+
+        snaps = {s["name"]: s for s in reg.get("snapshots", [])}
+        if name not in snaps:
+            die(f"Snapshot not found in registry: {name}")
+
+        s = snaps[name]
+        marker = " (active)" if name == active else ""
+        print(f"Snapshot: {name}{marker}")
+        print(f"  Created:    {s.get('created_at', '?')}")
+        print(f"  Source:     {s.get('source', '?')}")
+        print(f"  Entities:   {s.get('entities', '?')}")
+        print(f"  Relations:  {s.get('relations', '?')}")
+        print(f"  Communities:{s.get('communities', '?')}")
+        if s.get("experiment"):
+            print(f"  Experiment: {s['experiment']}")
+        if s.get("grade"):
+            print(f"  Grade:      {s['grade']}")
+        if s.get("notes"):
+            print(f"  Notes:      {s['notes']}")
+        return
+
+    # ── rollback ─────────────────────────────────────────────────────────────
+    elif action == "rollback":
+        reg = _load_registry()
+        snaps = reg.get("snapshots", [])
+        active = _current_snap_name()
+
+        if len(snaps) < 2:
+            die("Nothing to roll back to — only one snapshot exists.")
+
+        # Find the snapshot just before the active one
+        names = [s["name"] for s in snaps]
+        if active in names:
+            idx = names.index(active)
+            if idx == 0:
+                die(f"'{active}' is the oldest snapshot — nothing to roll back to.")
+            prev = names[idx - 1]
+        else:
+            prev = names[-1]
+
+        snap_path = SNAP_DIR / prev
+        graph_db = VAULT / "graph.db"
+        tmp = VAULT / "graph.db.tmp"
+        if tmp.exists() or tmp.is_symlink():
+            tmp.unlink()
+        tmp.symlink_to(snap_path)
+        tmp.rename(graph_db)
+
+        reg["active"] = prev
+        _save_registry(reg)
+
+        print(f"Rolled back: {active} → {prev}")
+        stats = _snap_stats(snap_path)
+        print(f"  Entities:    {stats['entities']}")
+        print(f"  Relations:   {stats['relations']}")
+        print(f"  Communities: {stats['communities']}")
+        return
+
+    else:
+        die(f"Unknown snap action: {action}. Valid: ls, create, checkout, info, rollback")
+
+
+# ── Entrypoint ─────────────────────────────────────────────────────────────
+
+def main():
+    # Shared global flags — added as parent to every subcommand so they can
+    # appear anywhere: `vault recap spring_austin --text` works fine.
+    global_flags = argparse.ArgumentParser(add_help=False)
+    global_flags.add_argument("--text", action="store_true", default=False,
+                              help="Human-readable text output")
+    global_flags.add_argument("--model", default=DEFAULT_MODEL,
+                              help=f"Synthesis model (default: {DEFAULT_MODEL})")
+    global_flags.add_argument("--no-synth", action="store_true", default=False,
+                              help="Skip synthesis, return raw data")
+    global_flags.add_argument("--threshold", type=int, default=DEFAULT_THRESHOLD,
+                              help=f"Char threshold to trigger synthesis (default: {DEFAULT_THRESHOLD})")
+
+    parser = argparse.ArgumentParser(
+        prog="vault",
+        description="Memory vault CLI — fast data access + Haiku synthesis",
+        parents=[global_flags],
+    )
+
+    sub = parser.add_subparsers(dest="command", required=True)
+    G = {"parents": [global_flags]}
+
+    # projects
+    sub.add_parser("projects", help="List all projects with session counts", **G)
+
+    # sessions
+    p_sessions = sub.add_parser("sessions", help="List recent sessions", **G)
+    p_sessions.add_argument("project", nargs="?", default=None)
+    p_sessions.add_argument("-n", type=int, default=20)
+
+    # show
+    p_show = sub.add_parser("show", help="Show full episode content", **G)
+    p_show.add_argument("session_id")
+
+    # search
+    p_search = sub.add_parser("search", help="FAISS semantic search (raw facts)", **G)
+    p_search.add_argument("query")
+    p_search.add_argument("-k", type=int, default=10)
+    p_search.add_argument("--project", default=None, help="Filter by project_scope")
+
+    # threads
+    p_threads = sub.add_parser("threads", help="List vault threads", **G)
+    p_threads.add_argument("project", nargs="?", default=None)
+
+    # events
+    p_events = sub.add_parser("events", help="List recent tool-call events", **G)
+    p_events.add_argument("project", nargs="?", default=None)
+    p_events.add_argument("-n", type=int, default=50)
+
+    # messages
+    p_messages = sub.add_parser("messages", help="Messages for a session", **G)
+    p_messages.add_argument("session_id")
+
+    # queue
+    p_queue = sub.add_parser("queue", help="Show or manage the promotion queue", **G)
+    p_queue.add_argument("action", nargs="?", choices=["add", "clear"], default=None)
+    p_queue.add_argument("session_id", nargs="?", default=None)
+    p_queue.add_argument("--count", action="store_true", help="Print count only")
+
+    # status
+    sub.add_parser("status", help="Promotion stats: promoted / total / backlog", **G)
+
+    # context — fast project facts for SessionStart injection (no LLM)
+    p_context = sub.add_parser("context", help="Top facts for a project (SessionStart injection)", **G)
+    p_context.add_argument("project")
+    p_context.add_argument("-k", type=int, default=12, help="Max facts to retrieve")
+    p_context.add_argument("--budget", type=int, default=2000, help="Max output chars")
+    p_context.add_argument("--json-output", action="store_true", default=False)
+
+    # promote
+    p_promote = sub.add_parser("promote", help="Promote one session now (blocking)", **G)
+    p_promote.add_argument("session_id")
+    p_promote.add_argument("--dry-run", action="store_true", default=False)
+
+    # worker
+    p_worker = sub.add_parser("worker", help="Drain promotion queue serially", **G)
+    p_worker.add_argument("--once", action="store_true", default=False,
+                          help="Process one session then exit")
+    p_worker.add_argument("--dry-run", action="store_true", default=False)
+
+    # recap
+    p_recap = sub.add_parser("recap", help="Rolling session recap (synthesized)", **G)
+    p_recap.add_argument("project", nargs="?", default=None)
+    p_recap.add_argument("-n", type=int, default=20)
+
+    # recall
+    p_recall = sub.add_parser("recall", help="Recall facts on a topic (synthesized)", **G)
+    p_recall.add_argument("topic")
+    p_recall.add_argument("--deep", action="store_true", default=False)
+
+    # digest
+    p_digest = sub.add_parser("digest", help="Full project state digest (synthesized)", **G)
+    p_digest.add_argument("project")
+
+    # chunk — L1 chunker
+    p_chunk = sub.add_parser("chunk", help="Run L1 chunker for a project (L0 → atoms)", **G)
+    p_chunk.add_argument("project")
+    p_chunk.add_argument("--dry-run", action="store_true", default=False)
+    p_chunk.add_argument("--skip-faiss", action="store_true", default=False,
+                         help="Skip FAISS update (caller will rebuild)")
+
+    # atoms — L1 atom operations
+    p_atoms = sub.add_parser("atoms", help="L1 atom operations (list/show/search/stats)", **G)
+    p_atoms.add_argument("action", nargs="?", choices=["list", "show", "search", "stats"],
+                         default="list")
+    p_atoms.add_argument("atom_id", nargs="?", default=None, help="Atom ID for 'show'")
+    p_atoms.add_argument("--query", "-q", default=None, help="Search query")
+    p_atoms.add_argument("--project", default=None, help="Filter by project")
+    p_atoms.add_argument("-n", type=int, default=20, help="Limit for list")
+    p_atoms.add_argument("-k", type=int, default=10, help="Top-K for search")
+
+    # graph — L2 entity graph + community operations
+    p_graph = sub.add_parser("graph", help="L2 entity graph + community operations", **G)
+    p_graph.add_argument(
+        "graph_action", nargs="?",
+        choices=["stats", "entities", "entity", "interests", "communities", "community",
+                 "update", "rebuild", "normalize", "search", "export"],
+        default="stats",
+    )
+    p_graph.add_argument("name", nargs="?", default=None, help="Entity name for 'entity' or query for 'search'")
+    p_graph.add_argument("community_id", nargs="?", default=None, help="Community ID for 'community'")
+    p_graph.add_argument("--type", dest="type", default=None,
+                         help="Filter entities by type (tool/project/service/concept/file/place/person)")
+    p_graph.add_argument("-n", type=int, default=50, help="Limit for list commands")
+    p_graph.add_argument("--skip-llm", action="store_true", default=False,
+                         help="Skip LLM pass in normalize (Pass 1 only)")
+    p_graph.add_argument("--query", default=None, help="Query for graph search")
+
+    # lab — Memory Lab experiment framework
+    p_lab = sub.add_parser("lab", help="Memory Lab — fork/run/grade graph.db experiments", **G)
+    p_lab.add_argument(
+        "lab_action", nargs="?",
+        choices=["ls", "new", "run", "compare", "grade", "promote", "status", "eval", "export"],
+        default="ls",
+    )
+    p_lab.add_argument("exp_name", nargs="?", default=None, help="Experiment name/slug")
+    p_lab.add_argument("--mode", choices=["play", "official"], default="play",
+                       help="Experiment mode (default: play)")
+    p_lab.add_argument("--hypothesis", default=None, help="Hypothesis for new experiment")
+    p_lab.add_argument("--grade", dest="grade_value",
+                       choices=["better", "same", "worse", "promising"],
+                       help="Grade for vault lab grade")
+    p_lab.add_argument("--notes", dest="grade_notes", default=None,
+                       help="Notes to attach to grade")
+
+    # ── vault snap ─────────────────────────────────────────────────────────
+    p_snap = sub.add_parser("snap", help="Snapshot store — version control for graph.db", **G)
+    p_snap.add_argument(
+        "snap_action", nargs="?",
+        choices=["ls", "create", "checkout", "info", "rollback"],
+        default="ls",
+    )
+    p_snap.add_argument("snap_name", nargs="?", default=None,
+                        help="Snapshot name (for create/checkout/info)")
+    p_snap.add_argument("--notes", default=None, help="Notes to attach to snapshot (for create)")
+
+    args = parser.parse_args()
+
+    dispatch = {
+        "projects": cmd_projects,
+        "sessions": cmd_sessions,
+        "show": cmd_show,
+        "search": cmd_search,
+        "threads": cmd_threads,
+        "events": cmd_events,
+        "messages": cmd_messages,
+        "chunk": cmd_chunk,
+        "atoms": cmd_atoms,
+        "graph": cmd_graph,
+        "queue": cmd_queue,
+        "status": cmd_status,
+        "context": cmd_context,
+        "promote": cmd_promote,
+        "worker": cmd_worker,
+        "recap": cmd_recap,
+        "recall": cmd_recall,
+        "digest": cmd_digest,
+        "lab": cmd_lab,
+        "snap": cmd_snap,
+    }
+
+    handler = dispatch.get(args.command)
+    if not handler:
+        die(f"Unknown command: {args.command}")
+
+    try:
+        handler(args)
+    except KeyboardInterrupt:
+        sys.exit(1)
+    except BrokenPipeError:
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

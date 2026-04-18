@@ -1,0 +1,19 @@
+{
+  "slug": "001-hebbian-weights",
+  "name": "hebbian-weights",
+  "mode": "official",
+  "hypothesis": "Updating relation weights based on entity co-activation across sessions will produce more semantically coherent communities than static co-occurrence weights",
+  "status": "promoted",
+  "baseline_sha": "",
+  "created_at": "2026-04-17T19:58:22.627629+00:00",
+  "grade": "promising",
+  "grade_notes": "Correct semantic signal. yt_dj\u2194Liquidsoap, music-genome\u2194genre-curation-skill, Cortex\u2194power-search all emerge correctly. 160\u2192145 communities, avg size +10%. Worth integrating but ETA=0.3 may be too conservative \u2014 experiment 002 should try higher learning rate or lower MIN_COACTIVATIONS.",
+  "promoted": true,
+  "last_run": "2026-04-17T20:05:10.340359+00:00",
+  "graded_at": "2026-04-17T20:13:45.862355+00:00",
+  "promoted_at": "2026-04-17T20:49:46.754735+00:00",
+  "snapshot": "001-hebbian-weights.db",
+  "eval_verdict": "The Hebbian update rule is saturated at \u0394w=3.0 across all pairs regardless of co-activation magnitude, meaning the experiment produced a binary presence detector rather than a weighted associative memory \u2014 the core hypothesis is not proven.",
+  "eval_score": 2.0,
+  "eval_at": "2026-04-17T21:49:59.537553+00:00"
+}

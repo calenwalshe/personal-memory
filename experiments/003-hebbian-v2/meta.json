@@ -1,0 +1,16 @@
+{
+  "slug": "003-hebbian-v2",
+  "name": "hebbian-v2",
+  "mode": "official",
+  "hypothesis": "Removing the MAX_DELTA cap (set to 20.0) allows the Hebbian weight update to encode co-activation magnitude rather than just co-presence \u2014 pairs with 65 shared sessions should get ~19.5x more weight than pairs with 2 sessions",
+  "status": "ran",
+  "forked_from": "002-cross-domain-bridges.db",
+  "created_at": "2026-04-18T05:00:34.693143+00:00",
+  "grade": null,
+  "grade_notes": "",
+  "promoted": false,
+  "last_run": "2026-04-18T05:01:19.503883+00:00",
+  "eval_verdict": "The uncapped Hebbian update encodes genuine magnitude signal in at least one case (Codex \u2194 config.toml) but produces a saturated clique at the top that obscures rather than differentiates the strongest associations.",
+  "eval_score": 2.8,
+  "eval_at": "2026-04-18T05:14:39.609891+00:00"
+}

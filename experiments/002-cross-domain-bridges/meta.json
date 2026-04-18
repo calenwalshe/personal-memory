@@ -1,0 +1,19 @@
+{
+  "slug": "002-cross-domain-bridges",
+  "name": "cross-domain-bridges",
+  "mode": "official",
+  "hypothesis": "Embedding community summaries and finding high-cosine pairs across different interest areas will surface latent analogous_to connections invisible to co-occurrence alone",
+  "status": "promoted",
+  "forked_from": "001-hebbian-weights.db",
+  "created_at": "2026-04-17T20:54:00.212088+00:00",
+  "grade": "promising",
+  "grade_notes": "17 bridges found at threshold=0.45. Top signal: memory-arch\u2194persistent-session (0.51), hooks\u2194tmux (0.46), TUI-dashboard\u2194yt_dj-monitoring (0.46). Threshold calibration needed \u2014 0.45 feels right for MiniLM cross-domain. Canva showing up too often (design community is dense). Consider per-interest-area deduplication in 003.",
+  "promoted": true,
+  "last_run": "2026-04-17T20:55:54.144800+00:00",
+  "graded_at": "2026-04-17T20:56:07.569525+00:00",
+  "promoted_at": "2026-04-17T20:56:11.049312+00:00",
+  "snapshot": "002-cross-domain-bridges.db",
+  "eval_verdict": "The experiment produces genuine cross-domain analogies at mid-range scores (0.51\u20130.52), but the top result is contaminated by same-project temporal duplication, and the atom-level evidence layer failed on the most surprising bridge.",
+  "eval_score": 3.1,
+  "eval_at": "2026-04-17T21:24:33.782109+00:00"
+}
