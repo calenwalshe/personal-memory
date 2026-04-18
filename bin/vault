@@ -1298,6 +1298,16 @@ def cmd_graph(args):
         # Regenerate communities browser HTML from current graph.db + atoms.db
         _graph_export_html(args)
 
+    elif action == "bridges":
+        from bridge_detector import run as detect_bridges
+        threshold = getattr(args, "bridge_threshold", 0.45)
+        max_b = getattr(args, "n", 20)
+        result = detect_bridges(threshold=threshold, max_bridges=max_b, verbose=args.text)
+        if "error" in result:
+            die(result["error"])
+        if not args.text:
+            out(result, args.text)
+
     else:
         die(f"Unknown graph action: {action}")
 
@@ -3030,7 +3040,7 @@ def main():
     p_graph.add_argument(
         "graph_action", nargs="?",
         choices=["stats", "entities", "entity", "interests", "communities", "community",
-                 "update", "rebuild", "normalize", "search", "export"],
+                 "update", "rebuild", "normalize", "search", "export", "bridges"],
         default="stats",
     )
     p_graph.add_argument("name", nargs="?", default=None, help="Entity name for 'entity' or query for 'search'")
@@ -3041,6 +3051,8 @@ def main():
     p_graph.add_argument("--skip-llm", action="store_true", default=False,
                          help="Skip LLM pass in normalize (Pass 1 only)")
     p_graph.add_argument("--query", default=None, help="Query for graph search")
+    p_graph.add_argument("--bridge-threshold", type=float, default=0.45, dest="bridge_threshold",
+                         help="Cosine similarity threshold for bridge detection (default: 0.45)")
 
     # lab — Memory Lab experiment framework
     p_lab = sub.add_parser("lab", help="Memory Lab — fork/run/grade graph.db experiments", **G)

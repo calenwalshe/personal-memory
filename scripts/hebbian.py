@@ -9,12 +9,22 @@ co-appeared in this session's atoms, we add ETA to their relation weight
 in graph.db. Run after every chunker invocation — weights accumulate
 naturally over time.
 
-Parameters:
-    ETA = 0.1       Small per-session increment. Over 100 sessions a
-                    strongly co-active pair reaches ~10 — on par with
-                    the top co-occurrence baseline weights.
-    MIN_ATOMS = 1   Minimum atoms a pair must share to get a boost.
-                    (Always 1 in the live case — one session fires once.)
+Parameters validated by experiments 001–003:
+    ETA = 0.3       Per-session increment. Exp-003 proved ETA=0.3 gives
+                    meaningful gradient across the full weight range.
+                    Over ~65 sessions a top pair reaches ~19.5 — on par
+                    with the strongest co-occurrence baseline edges.
+    MAX_WEIGHT = 20.0  Soft ceiling on a single edge. Prevents runaway
+                    accumulation for very frequent pairs while preserving
+                    the 32x spread between rare and frequent co-activation
+                    (exp-003 finding: MAX_DELTA=3.0 caused binary saturation
+                    at 85% of qualifying pairs; 20.0 unblocks the gradient).
+
+Live vs batch distinction:
+    This module runs live (once per session, ETA applied once per pair).
+    Experiments 001/003 use batch retrospective mode (ETA × session_count).
+    Params are calibrated for the live case — no MIN_COACTIVATIONS filter
+    since each session fires at most once per pair.
 """
 
 import json
@@ -29,7 +39,8 @@ VAULT = Path(__file__).parent.parent
 ATOMS_DB = VAULT / "atoms.db"
 GRAPH_DB = VAULT / "graph.db"   # symlink → active snapshot
 
-ETA = 0.1   # per-session learning rate
+ETA = 0.3        # per-session learning rate (validated by exp-003)
+MAX_WEIGHT = 20.0  # soft ceiling — preserves gradient, prevents runaway
 
 
 def now() -> str:
@@ -71,9 +82,10 @@ def _upsert_hebbian_edge(eid_a: str, eid_b: str, conn: sqlite3.Connection):
     ).fetchone()
 
     if row:
+        new_weight = min(row[1] + ETA, MAX_WEIGHT)
         conn.execute(
-            "UPDATE relations SET weight=weight+?, last_seen=?, updated_at=? WHERE id=?",
-            (ETA, ts, ts, row[0])
+            "UPDATE relations SET weight=?, last_seen=?, updated_at=? WHERE id=?",
+            (new_weight, ts, ts, row[0])
         )
     else:
         conn.execute(
