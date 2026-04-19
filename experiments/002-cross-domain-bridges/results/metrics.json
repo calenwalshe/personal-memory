@@ -1,0 +1,244 @@
+{
+  "experiment": "002-cross-domain-bridges",
+  "run_at": "2026-04-17T20:55:54.103543+00:00",
+  "params": {
+    "threshold": 0.45,
+    "max_bridges": 30
+  },
+  "forked_from": "001-hebbian-weights.db",
+  "baseline": {
+    "communities": 115,
+    "analogous_to_edges": 3
+  },
+  "post": {
+    "analogous_to_edges": 20,
+    "bridges_found": 17,
+    "edges_created": 17,
+    "edges_updated": 0
+  },
+  "top_bridges": [
+    {
+      "score": 0.7427,
+      "community_a": "Nano Banana + WeasyPrint Design Stack",
+      "community_b": "Design Skill + Image Gen Stack"
+    },
+    {
+      "score": 0.5924,
+      "community_a": "Design Skill + Image Gen Stack",
+      "community_b": "AI Design Tools Integration Gap"
+    },
+    {
+      "score": 0.5608,
+      "community_a": "Design Skill + Image Gen Stack",
+      "community_b": "AI Image Models Design Reference"
+    },
+    {
+      "score": 0.5227,
+      "community_a": "Google Maps API skill & venue lookup",
+      "community_b": "Multi-region land parcel search & enrichment"
+    },
+    {
+      "score": 0.5134,
+      "community_a": "Personal Memory System Architecture",
+      "community_b": "Persistent session execution architecture"
+    },
+    {
+      "score": 0.49,
+      "community_a": "Design Studio Skill Consolidation",
+      "community_b": "AI Design Tools Integration Gap"
+    },
+    {
+      "score": 0.4862,
+      "community_a": "Server Hardening & Pentest Cycle",
+      "community_b": "ChatGPT Remote Browser Automation"
+    },
+    {
+      "score": 0.4801,
+      "community_a": "Google Maps API skill & venue lookup",
+      "community_b": "Personal Assistant Google Workspace Bridge"
+    },
+    {
+      "score": 0.4611,
+      "community_a": "TUI dashboard for consolidation monitoring",
+      "community_b": "yt_dj Resource Monitoring API"
+    },
+    {
+      "score": 0.4611,
+      "community_a": "Hook design for Cortex research discipline",
+      "community_b": "AI Design Tools Integration Gap"
+    },
+    {
+      "score": 0.4578,
+      "community_a": "AI Image Models Design Reference",
+      "community_b": "Loter\u00eda Deck Design & Production"
+    },
+    {
+      "score": 0.4569,
+      "community_a": "Hook-Driven State and Rule Persistence",
+      "community_b": "Persistent session execution architecture"
+    },
+    {
+      "score": 0.4563,
+      "community_a": "Memory Vault Operations & System Health",
+      "community_b": "Persistent session execution architecture"
+    },
+    {
+      "score": 0.454,
+      "community_a": "Personal Assistant Google Workspace Bridge",
+      "community_b": "Krause Springs Trip Planning & Execution"
+    },
+    {
+      "score": 0.4529,
+      "community_a": "Credential Isolation & Secrets Management",
+      "community_b": "ChatGPT Remote Browser Automation"
+    },
+    {
+      "score": 0.4526,
+      "community_a": "Hook-Driven State and Rule Persistence",
+      "community_b": "Persistent Edit permissions for skill files"
+    },
+    {
+      "score": 0.4514,
+      "community_a": "ChatGPT Remote Browser Automation",
+      "community_b": "YouTube Live API & Stream Auth"
+    }
+  ],
+  "written_edges": [
+    {
+      "entity_a": "design-pack",
+      "entity_b": "Nano Banana 2",
+      "community_a": "Nano Banana + WeasyPrint Design Stack",
+      "community_b": "Design Skill + Image Gen Stack",
+      "score": 0.7427,
+      "status": "created"
+    },
+    {
+      "entity_a": "Nano Banana 2",
+      "entity_b": "Canva",
+      "community_a": "Design Skill + Image Gen Stack",
+      "community_b": "AI Design Tools Integration Gap",
+      "score": 0.5924,
+      "status": "created"
+    },
+    {
+      "entity_a": "Nano Banana 2",
+      "entity_b": "memory-capture",
+      "community_a": "Design Skill + Image Gen Stack",
+      "community_b": "AI Image Models Design Reference",
+      "score": 0.5608,
+      "status": "created"
+    },
+    {
+      "entity_a": "Google Places API",
+      "entity_b": "land-scan",
+      "community_a": "Google Maps API skill & venue lookup",
+      "community_b": "Multi-region land parcel search & enrichment",
+      "score": 0.5227,
+      "status": "created"
+    },
+    {
+      "entity_a": "memory system",
+      "entity_b": "tmux",
+      "community_a": "Personal Memory System Architecture",
+      "community_b": "Persistent session execution architecture",
+      "score": 0.5134,
+      "status": "created"
+    },
+    {
+      "entity_a": "Cortex pipeline",
+      "entity_b": "Canva",
+      "community_a": "Design Studio Skill Consolidation",
+      "community_b": "AI Design Tools Integration Gap",
+      "score": 0.49,
+      "status": "created"
+    },
+    {
+      "entity_a": "149.28.12.120",
+      "entity_b": "noVNC",
+      "community_a": "Server Hardening & Pentest Cycle",
+      "community_b": "ChatGPT Remote Browser Automation",
+      "score": 0.4862,
+      "status": "created"
+    },
+    {
+      "entity_a": "Google Places API",
+      "entity_b": "personal-assistant",
+      "community_a": "Google Maps API skill & venue lookup",
+      "community_b": "Personal Assistant Google Workspace Bridge",
+      "score": 0.4801,
+      "status": "created"
+    },
+    {
+      "entity_a": "TUI",
+      "entity_b": "/api/resources",
+      "community_a": "TUI dashboard for consolidation monitoring",
+      "community_b": "yt_dj Resource Monitoring API",
+      "score": 0.4611,
+      "status": "created"
+    },
+    {
+      "entity_a": "Cortex workflow",
+      "entity_b": "Canva",
+      "community_a": "Hook design for Cortex research discipline",
+      "community_b": "AI Design Tools Integration Gap",
+      "score": 0.4611,
+      "status": "created"
+    },
+    {
+      "entity_a": "memory-capture",
+      "entity_b": "Loter\u00eda",
+      "community_a": "AI Image Models Design Reference",
+      "community_b": "Loter\u00eda Deck Design & Production",
+      "score": 0.4578,
+      "status": "created"
+    },
+    {
+      "entity_a": "hooks",
+      "entity_b": "tmux",
+      "community_a": "Hook-Driven State and Rule Persistence",
+      "community_b": "Persistent session execution architecture",
+      "score": 0.4569,
+      "status": "created"
+    },
+    {
+      "entity_a": "memory vault",
+      "entity_b": "tmux",
+      "community_a": "Memory Vault Operations & System Health",
+      "community_b": "Persistent session execution architecture",
+      "score": 0.4563,
+      "status": "created"
+    },
+    {
+      "entity_a": "personal-assistant",
+      "entity_b": "Google Maps Directions API",
+      "community_a": "Personal Assistant Google Workspace Bridge",
+      "community_b": "Krause Springs Trip Planning & Execution",
+      "score": 0.454,
+      "status": "created"
+    },
+    {
+      "entity_a": ".api-keys",
+      "entity_b": "noVNC",
+      "community_a": "Credential Isolation & Secrets Management",
+      "community_b": "ChatGPT Remote Browser Automation",
+      "score": 0.4529,
+      "status": "created"
+    },
+    {
+      "entity_a": "hooks",
+      "entity_b": "self-edit guard",
+      "community_a": "Hook-Driven State and Rule Persistence",
+      "community_b": "Persistent Edit permissions for skill files",
+      "score": 0.4526,
+      "status": "created"
+    },
+    {
+      "entity_a": "noVNC",
+      "entity_b": "YouTube Data API",
+      "community_a": "ChatGPT Remote Browser Automation",
+      "community_b": "YouTube Live API & Stream Auth",
+      "score": 0.4514,
+      "status": "created"
+    }
+  ]
+}

@@ -1,0 +1,185 @@
+{
+  "experiment": "002-cross-domain-bridges",
+  "eval_at": "2026-04-17T21:24:33.782109+00:00",
+  "hypothesis": "Embedding community summaries and finding high-cosine pairs across different interest areas will surface latent analogous_to connections invisible to co-occurrence alone",
+  "challenges": [
+    {
+      "id": 1,
+      "title": "Design stack similarity or surface-level noise?",
+      "question": "Is the top-scoring bridge (0.7427) between Nano Banana + WeasyPrint and Design Skill + Image Gen Stack driven by shared conceptual structure (layout rendering, design pipeline), or by incidental vocabulary overlap (e.g. both summaries mention 'CSS', 'output', 'generate')?",
+      "entity_a": "Nano Banana + WeasyPrint Design Stack",
+      "entity_b": "Design Skill + Image Gen Stack",
+      "probe": "community",
+      "community_a": "Nano Banana + WeasyPrint Design Stack",
+      "community_b": "Design Skill + Image Gen Stack"
+    },
+    {
+      "id": 2,
+      "title": "Server hardening \u2194 ChatGPT automation: meaningful analogy or embedding artifact?",
+      "question": "The 0.4862 bridge between Server Hardening & Pentest Cycle and ChatGPT Remote Browser Automation is the most surprising cross-domain pair \u2014 do these entities actually share atoms about adversarial control, credential handling, or session security, or is the cosine similarity explained by generic ops vocabulary (SSH, tokens, scripts) that inflates similarity without a real analogical relationship?",
+      "entity_a": "Server Hardening & Pentest Cycle",
+      "entity_b": "ChatGPT Remote Browser Automation",
+      "probe": "atoms",
+      "community_a": "Server Hardening & Pentest Cycle",
+      "community_b": "ChatGPT Remote Browser Automation"
+    },
+    {
+      "id": 3,
+      "title": "Memory architecture \u2194 session execution: is this a true structural analogy?",
+      "question": "The 0.5134 bridge between Personal Memory System Architecture and Persistent session execution architecture appears to be the strongest candidate for a genuine analogous_to edge \u2014 do these entities share atoms about state persistence, checkpointing, or replay, such that the analogy would hold if an agent tried to apply lessons from one domain to the other?",
+      "entity_a": "Personal Memory System Architecture",
+      "entity_b": "Persistent session execution architectur",
+      "probe": "coactivation",
+      "community_a": "Personal Memory System Architecture",
+      "community_b": "Persistent session execution architectur"
+    },
+    {
+      "id": 4,
+      "title": "analogous_to edge inflation: are the 17 new edges quality or quantity?",
+      "question": "The jump from 3 to 20 analogous_to edges is the headline metric, but are those 17 new edges distributed across meaningfully distinct community pairs, or are most of them concentrated in the Design cluster (three of the top eight results involve Design Skill + Image Gen Stack), suggesting the graph is adding redundant near-duplicate edges rather than surfacing novel cross-domain structure?",
+      "entity_a": "Design Skill + Image Gen Stack",
+      "entity_b": "AI Design Tools Integration Gap",
+      "probe": "community",
+      "community_a": "Design Skill + Image Gen Stack",
+      "community_b": "AI Design Tools Integration Gap"
+    }
+  ],
+  "evidence": [
+    {
+      "challenge_id": 1,
+      "entity_a": "Nano Banana + WeasyPrint Design Stack",
+      "entity_b": "Design Skill + Image Gen Stack",
+      "communities": {
+        "a": {
+          "label": "Nano Banana + WeasyPrint Design Stack",
+          "summary": "This cluster documents the development of a visual design workflow built around Gemini Flash (Nano Banana) for batch image generation and WeasyPrint for PDF composition. The stack emerged from research into AI design tools, with initial discovery of design-pack as a pattern for combining image generation with PDF stitching. Implementation focused on Nano Banana as the optimal image engine for high",
+          "genesis": "User researched AI design tools and discovered the design-pack pattern (image generation + PDF stitching). This led to building a CLI implementation wrapping Nano Banana and WeasyPrint for batch visual generation, initially applied to family portrait and Loter\u00eda deck workflows.",
+          "current_state": "design-pack CLI is functional with Nano Banana + WeasyPrint as core stack. Active work wrapping tools into a design skill. A methodological gotcha about API benchmark model alignment needs resolution before benchmark claims finalize.",
+          "open_threads": "[\"Fix API benchmark paths to compare model versions of equal capability (gpt-4o vs Chrome thinking/pro equivalents)\", \"Finalize design skill wrapper to expose Nano Banana + WeasyPrint for production design workflows\", \"Integrate additional AI tools from 4-tier research (Canva, Ideogram, Figma) into design-pack extensibility\", \"Document Google Drive approval workflow pattern used for family portrait and Loter\\u00eda iterations\"]"
+        },
+        "b": {
+          "label": "Design Skill + Image Gen Stack",
+          "summary": "A new design skill initiative wrapping programmatic image generation (Nano Banana 2, Imagen 4) and PDF tooling (WeasyPrint, nano-banana-pro) to support visual design workflows. The cluster emerged from recognizing both technical capabilities (Gemini API access to Nano Banana 2) and a gap in existing tooling (no design philosophy pack). Current focus is on tool integration and API wiring to make im",
+          "genesis": "User identified a need for programmatic visual design tooling (image generation + PDF creation) and discovered that Nano Banana 2 was accessible via Gemini API. Recognized this could unify disparate tools into a single, callable design skill.",
+          "current_state": "Design skill creation greenlit; technical capabilities confirmed (Gemini API + Nano Banana 2 working). Currently in integration planning phase\u2014need to wire Gemini SDK, define tool-selection logic, and establish PDF pipeline.",
+          "open_threads": "[\"How should tool selection logic work? (when Nano Banana 2 vs Imagen 4 vs nano-banana-pro)\", \"Should design philosophy pack be built before or after skill launch?\", \"What does the design skill API surface look like? (parameters, return types, prompt templates)\", \"How to handle image editing workflows\\u2014is editing a core use case or secondary?\"]"
+        }
+      }
+    },
+    {
+      "challenge_id": 2,
+      "entity_a": "Server Hardening & Pentest Cycle",
+      "entity_b": "ChatGPT Remote Browser Automation",
+      "atoms": [],
+      "atom_count": 0
+    },
+    {
+      "challenge_id": 3,
+      "entity_a": "Personal Memory System Architecture",
+      "entity_b": "Persistent session execution architectur",
+      "coactivation": {
+        "sessions_a": 0,
+        "sessions_b": 0,
+        "shared": 0,
+        "overlap_pct": 0.0
+      }
+    },
+    {
+      "challenge_id": 4,
+      "entity_a": "Design Skill + Image Gen Stack",
+      "entity_b": "AI Design Tools Integration Gap",
+      "communities": {
+        "a": {
+          "label": "Design Skill + Image Gen Stack",
+          "summary": "A new design skill initiative wrapping programmatic image generation (Nano Banana 2, Imagen 4) and PDF tooling (WeasyPrint, nano-banana-pro) to support visual design workflows. The cluster emerged from recognizing both technical capabilities (Gemini API access to Nano Banana 2) and a gap in existing tooling (no design philosophy pack). Current focus is on tool integration and API wiring to make im",
+          "genesis": "User identified a need for programmatic visual design tooling (image generation + PDF creation) and discovered that Nano Banana 2 was accessible via Gemini API. Recognized this could unify disparate tools into a single, callable design skill.",
+          "current_state": "Design skill creation greenlit; technical capabilities confirmed (Gemini API + Nano Banana 2 working). Currently in integration planning phase\u2014need to wire Gemini SDK, define tool-selection logic, and establish PDF pipeline.",
+          "open_threads": "[\"How should tool selection logic work? (when Nano Banana 2 vs Imagen 4 vs nano-banana-pro)\", \"Should design philosophy pack be built before or after skill launch?\", \"What does the design skill API surface look like? (parameters, return types, prompt templates)\", \"How to handle image editing workflows\\u2014is editing a core use case or secondary?\"]"
+        },
+        "b": {
+          "label": "AI Design Tools Integration Gap",
+          "summary": "Research identified 4 tiers of AI design tools and flagged Canva, Ideogram, and Figma as integration candidates for a broader design ecosystem. However, the initial design-pack implementation only included Nano Banana, creating a gap between research scope and actual deployment. This cluster tracks the mismatch between identified opportunities and what was shipped.",
+          "genesis": "Emerged from systematic research into AI design tool landscape, categorizing tools by capability tier and identifying candidates for product integration.",
+          "current_state": "Gap identified but resolution status unclear. Canva, Ideogram, and Figma remain candidates but not yet integrated; unclear if deferred, blocked, or deprioritized.",
+          "open_threads": "[\"Why was integration limited to Nano Banana? Technical, business, or prioritization reasons?\", \"What dependencies or barriers prevent Canva, Ideogram, Figma integration?\", \"Should design-pack be expanded to cover the three flagged candidates in next iteration?\"]"
+        }
+      }
+    }
+  ],
+  "verdict": {
+    "overall_verdict": "The experiment produces genuine cross-domain analogies at mid-range scores (0.51\u20130.52), but the top result is contaminated by same-project temporal duplication, and the atom-level evidence layer failed on the most surprising bridge.",
+    "quality_score": 3.1,
+    "challenge_verdicts": [
+      {
+        "challenge_id": 1,
+        "ruling": "edge-case",
+        "finding": "The 0.7427 score is real but misleading: both communities document the *same evolving project* (Nano Banana + WeasyPrint design stack) from different temporal vantage points \u2014 Community A is post-implementation, Community B is pre-integration planning. This is temporal duplication masquerading as cross-domain similarity, not a latent analogy the system surfaced. The high cosine is diagnostic of a chunking/deduplication gap, not evidence that the bridge method works."
+      },
+      {
+        "challenge_id": 2,
+        "ruling": "inconclusive",
+        "finding": "The atom probe returned zero results (atom_count: 0), making it impossible to rule on whether the 0.4862 cosine reflects structural analogy (adversarial session control, credential hygiene) or vocabulary overlap (SSH, tokens, scripts). The evidence layer is absent, not negative \u2014 this is a pipeline gap, not a confirmed false positive."
+      },
+      {
+        "challenge_id": 3,
+        "ruling": "inconclusive",
+        "finding": "The challenge text was truncated and no atom evidence was supplied, so no ruling can be made. The 0.5134 score between Personal Memory Architecture and Persistent session execution is plausible on structural grounds (both are pipeline systems with state management, cursor tracking, and durability concerns), but without atom-level grounding this remains an untested hypothesis."
+      }
+    ],
+    "exhibit_a": [
+      {
+        "title": "Geographic query orchestration surfaces across two unrelated domains",
+        "claim": "The experiment linked Google Maps API venue lookup and multi-region land parcel search (0.5227) \u2014 two workflows built for completely different purposes by the same user \u2014 by recognizing shared spatial query orchestration structure.",
+        "evidence": "score=0.5227 Google Maps API skill & venue lookup \u2194 Multi-region land parcel search & enrich \u2014 no shared vocabulary forced this; both communities share multi-source API aggregation and location-disambiguation patterns.",
+        "why_it_matters": "This is the cleanest proof-of-concept: different problem domains, different user intent, same underlying architectural pattern \u2014 exactly the class of latent connection the experiment was designed to find."
+      },
+      {
+        "title": "Design cluster evolution traced across community snapshots",
+        "claim": "Three design-adjacent communities (0.7427, 0.5924, 0.5608) form a coherent lineage: gap recognition \u2192 tooling discovery \u2192 skill integration \u2014 a project arc the embedding space reconstructed without explicit timestamps.",
+        "evidence": "Design Skill + Image Gen Stack appears as a hub connected to both Nano Banana implementation and AI Design Tools Integration Gap, suggesting the embeddings captured project phase, not just topic.",
+        "why_it_matters": "If confirmed, this means the bridge method can reconstruct project timelines and identify where work is stuck or converging \u2014 a planning use case beyond pure analogy discovery."
+      },
+      {
+        "title": "Google Maps \u2194 Google Workspace bridge hints at API-surface clustering",
+        "claim": "The 0.4801 bridge between Maps venue lookup and Google Workspace assistant bridges suggests the embeddings are finding shared API-orchestration patterns rather than just domain labels.",
+        "evidence": "score=0.4801 Google Maps API skill & venue lookup \u2194 Personal Assistant Google Workspace Bridge \u2014 both involve stateless skill dispatch over authenticated Google APIs.",
+        "why_it_matters": "If this is structural rather than vocabulary-driven, the method could auto-suggest skill reuse across Google-surface tools \u2014 reducing implementation duplication."
+      }
+    ],
+    "edge_cases": [
+      {
+        "title": "Same-project temporal duplicates inflate top scores",
+        "finding": "The highest-scoring pair (0.7427) documents the same Nano Banana + WeasyPrint project at different implementation stages. The bridge method has no mechanism to distinguish 'same project, different time' from 'different project, same structure.'",
+        "recommendation": "Add a deduplication gate: if two communities share >2 named entities or >1 tool reference, suppress the pair from bridge output and flag it as a consolidation candidate instead."
+      },
+      {
+        "title": "Atom probe returned empty on the most interesting bridge",
+        "finding": "Challenge 2 (Server Hardening \u2194 ChatGPT Automation, 0.4862) had zero supporting atoms \u2014 the most surprising cross-domain bridge has no grounded evidence. This could mean atoms weren't chunked for these communities, or the atom layer isn't indexing security/ops content reliably.",
+        "recommendation": "Audit atom coverage by community label; if ops/security clusters are systematically under-atomized, the bridge layer will produce unverifiable claims for exactly the most novel connections."
+      },
+      {
+        "title": "Design cluster dominates top-8 results (5 of 8 entries)",
+        "finding": "Five of the eight top bridges involve a design-related community, suggesting the design cluster has unusually high embedding density relative to other domains \u2014 possibly because design work generated more documentation surface area.",
+        "recommendation": "Normalize scores by community size or atom count before ranking; raw cosine will always favor dense clusters and produce a skewed leaderboard."
+      }
+    ],
+    "open_questions": [
+      "Is the atom probe failure on Challenge 2 a systematic gap in ops/security atomization, or a one-off indexing miss? Run vault atoms stats filtered by community label to check coverage distribution.",
+      "Can the community embedding method distinguish 'same project, different phase' from 'different project, same pattern'? This is the difference between a deduplication signal and an analogy signal \u2014 the experiment needs a labeled test set to measure this.",
+      "What is the minimum meaningful cosine threshold? The 0.48\u20130.52 range contains the most interesting cross-domain bridges; below that, how quickly does signal degrade into vocabulary noise?"
+    ],
+    "for_human": "The experiment works at mid-range scores: the geographic query bridge (0.5227) is a clean proof that the method can surface structural analogies invisible to co-occurrence. However, the top result is a false positive caused by same-project temporal duplication \u2014 a chunking gap that will pollute precision metrics if not addressed before production. Hold promotion until (1) a deduplication gate is added to suppress same-entity pairs, and (2) atom coverage is audited for ops/security clusters where the evidence layer returned empty."
+  },
+  "metrics_summary": {
+    "baseline": {
+      "communities": 115,
+      "analogous_to_edges": 3
+    },
+    "post": {
+      "analogous_to_edges": 20,
+      "bridges_found": 17,
+      "edges_created": 17,
+      "edges_updated": 0
+    }
+  }
+}

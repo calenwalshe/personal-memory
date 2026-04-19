@@ -1,20 +1,23 @@
 # Personal vault data — never commit
-vault/raw/threads/*.md
-vault/compiled/
-vault/candidates/
-vault/graph/
-vault/inbox/
-vault/derived/
-vault/facts.db
-vault/facts.db.*
-vault/*.faiss
-vault/*.map.json
-vault/impressions-index.json
-vault/scripts/extraction_state.json
-vault/scripts/run.log
-vault/scripts/*.jsonl
-vault/scripts/eval_set.jsonl
-vault/scripts/__pycache__/
+*.db
+*.db-shm
+*.db-wal
+*.faiss
+*.map.json
+raw/
+compiled/
+candidates/
+inbox/
+derived/
+graph/
+snapshots/
+impressions-index.json
+
+# Generated / runtime state
+scripts/extraction_state.json
+scripts/run.log
+scripts/*.jsonl
+scripts/eval_set.jsonl
 
 # Cortex runtime — per-session, never committed
 .cortex/session-memory.md

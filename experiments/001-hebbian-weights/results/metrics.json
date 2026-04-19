@@ -1,0 +1,228 @@
+{
+  "experiment": "001-hebbian-weights",
+  "run_at": "2026-04-17T20:05:10.299984",
+  "params": {
+    "eta": 0.3,
+    "min_coactivations": 2,
+    "max_delta": 3.0
+  },
+  "sessions_processed": 233,
+  "total_pairs": 17954,
+  "pairs_above_threshold": 596,
+  "edges_updated": 268,
+  "edges_created": 328,
+  "baseline": {
+    "relations": {
+      "edge_count": 1885,
+      "mean_weight": 1.085,
+      "max_weight": 11.0,
+      "weight_gt_5": 2,
+      "weight_gt_10": 1
+    },
+    "communities": {
+      "community_count": 160,
+      "total_entities_in_communities": 828,
+      "avg_community_size": 5.17,
+      "max_community_size": 36,
+      "singleton_count": 2
+    }
+  },
+  "post": {
+    "relations": {
+      "edge_count": 2213,
+      "mean_weight": 1.274,
+      "max_weight": 12.8,
+      "weight_gt_5": 5,
+      "weight_gt_10": 1
+    },
+    "communities": {
+      "community_count": 145,
+      "total_entities_in_communities": 828,
+      "avg_community_size": 5.71,
+      "max_community_size": 69,
+      "singleton_count": 2
+    }
+  },
+  "top_updates": [
+    {
+      "entity_a": "7ca79928-0da1-4c22-895c-c44ea1d8092e",
+      "entity_b": "a728d233-2811-4af8-af66-7a363a4ef51a",
+      "coactivations": 18,
+      "delta": 3.0,
+      "old_weight": 1.0,
+      "new_weight": 4.0,
+      "edge_existed": true
+    },
+    {
+      "entity_a": "01cd72b7-2b83-434d-a3a6-b05500d0ab7d",
+      "entity_b": "1d9f3163-141b-4a92-b083-b51d56a0653c",
+      "coactivations": 17,
+      "delta": 3.0,
+      "old_weight": 0,
+      "new_weight": 3.0,
+      "edge_existed": false
+    },
+    {
+      "entity_a": "01cd72b7-2b83-434d-a3a6-b05500d0ab7d",
+      "entity_b": "5b0117e3-f55c-49a5-b1be-f618a7efd87b",
+      "coactivations": 17,
+      "delta": 3.0,
+      "old_weight": 1.0,
+      "new_weight": 4.0,
+      "edge_existed": true
+    },
+    {
+      "entity_a": "01cd72b7-2b83-434d-a3a6-b05500d0ab7d",
+      "entity_b": "6b4f9cf2-1372-4719-99c3-744a1758e1a3",
+      "coactivations": 17,
+      "delta": 3.0,
+      "old_weight": 0,
+      "new_weight": 3.0,
+      "edge_existed": false
+    },
+    {
+      "entity_a": "01cd72b7-2b83-434d-a3a6-b05500d0ab7d",
+      "entity_b": "8e07bc3c-569e-40e8-a00d-e812b8b61291",
+      "coactivations": 17,
+      "delta": 3.0,
+      "old_weight": 2.0,
+      "new_weight": 5.0,
+      "edge_existed": true
+    },
+    {
+      "entity_a": "0fed0bd4-d07e-4ac1-bcd9-832fba2885a6",
+      "entity_b": "1d9f3163-141b-4a92-b083-b51d56a0653c",
+      "coactivations": 65,
+      "delta": 3.0,
+      "old_weight": 2.0,
+      "new_weight": 5.0,
+      "edge_existed": true
+    },
+    {
+      "entity_a": "0fed0bd4-d07e-4ac1-bcd9-832fba2885a6",
+      "entity_b": "5b0117e3-f55c-49a5-b1be-f618a7efd87b",
+      "coactivations": 49,
+      "delta": 3.0,
+      "old_weight": 1.0,
+      "new_weight": 4.0,
+      "edge_existed": true
+    },
+    {
+      "entity_a": "0fed0bd4-d07e-4ac1-bcd9-832fba2885a6",
+      "entity_b": "784a8f83-7b27-4989-bc2a-5e16c88bfc0a",
+      "coactivations": 41,
+      "delta": 3.0,
+      "old_weight": 2.0,
+      "new_weight": 5.0,
+      "edge_existed": true
+    },
+    {
+      "entity_a": "0fed0bd4-d07e-4ac1-bcd9-832fba2885a6",
+      "entity_b": "7ca79928-0da1-4c22-895c-c44ea1d8092e",
+      "coactivations": 17,
+      "delta": 3.0,
+      "old_weight": 1.0,
+      "new_weight": 4.0,
+      "edge_existed": true
+    },
+    {
+      "entity_a": "0fed0bd4-d07e-4ac1-bcd9-832fba2885a6",
+      "entity_b": "a728d233-2811-4af8-af66-7a363a4ef51a",
+      "coactivations": 17,
+      "delta": 3.0,
+      "old_weight": 1.0,
+      "new_weight": 4.0,
+      "edge_existed": true
+    },
+    {
+      "entity_a": "0fed0bd4-d07e-4ac1-bcd9-832fba2885a6",
+      "entity_b": "bbebaf7d-eb6d-4f59-8742-e16c1ee41b43",
+      "coactivations": 17,
+      "delta": 3.0,
+      "old_weight": 2.0,
+      "new_weight": 5.0,
+      "edge_existed": true
+    },
+    {
+      "entity_a": "0fed0bd4-d07e-4ac1-bcd9-832fba2885a6",
+      "entity_b": "f265f55f-e56b-4f02-ae45-b951e804dffe",
+      "coactivations": 17,
+      "delta": 3.0,
+      "old_weight": 1.0,
+      "new_weight": 4.0,
+      "edge_existed": true
+    },
+    {
+      "entity_a": "10d93c16-1c37-4116-bf6c-d87069c6a5ba",
+      "entity_b": "6b4f9cf2-1372-4719-99c3-744a1758e1a3",
+      "coactivations": 30,
+      "delta": 3.0,
+      "old_weight": 0,
+      "new_weight": 3.0,
+      "edge_existed": false
+    },
+    {
+      "entity_a": "10d93c16-1c37-4116-bf6c-d87069c6a5ba",
+      "entity_b": "979384bf-efbc-4e70-80b0-f6d0d8268bb8",
+      "coactivations": 30,
+      "delta": 3.0,
+      "old_weight": 1.0,
+      "new_weight": 4.0,
+      "edge_existed": true
+    },
+    {
+      "entity_a": "1d9f3163-141b-4a92-b083-b51d56a0653c",
+      "entity_b": "5648c684-bdea-48e1-bc13-f178e1bf5329",
+      "coactivations": 10,
+      "delta": 3.0,
+      "old_weight": 0,
+      "new_weight": 3.0,
+      "edge_existed": false
+    },
+    {
+      "entity_a": "1d9f3163-141b-4a92-b083-b51d56a0653c",
+      "entity_b": "5b0117e3-f55c-49a5-b1be-f618a7efd87b",
+      "coactivations": 65,
+      "delta": 3.0,
+      "old_weight": 2.0,
+      "new_weight": 5.0,
+      "edge_existed": true
+    },
+    {
+      "entity_a": "1d9f3163-141b-4a92-b083-b51d56a0653c",
+      "entity_b": "6b4f9cf2-1372-4719-99c3-744a1758e1a3",
+      "coactivations": 27,
+      "delta": 3.0,
+      "old_weight": 1.0,
+      "new_weight": 4.0,
+      "edge_existed": true
+    },
+    {
+      "entity_a": "1d9f3163-141b-4a92-b083-b51d56a0653c",
+      "entity_b": "784a8f83-7b27-4989-bc2a-5e16c88bfc0a",
+      "coactivations": 41,
+      "delta": 3.0,
+      "old_weight": 1.0,
+      "new_weight": 4.0,
+      "edge_existed": true
+    },
+    {
+      "entity_a": "1d9f3163-141b-4a92-b083-b51d56a0653c",
+      "entity_b": "8e07bc3c-569e-40e8-a00d-e812b8b61291",
+      "coactivations": 17,
+      "delta": 3.0,
+      "old_weight": 0,
+      "new_weight": 3.0,
+      "edge_existed": false
+    },
+    {
+      "entity_a": "1d9f3163-141b-4a92-b083-b51d56a0653c",
+      "entity_b": "a728d233-2811-4af8-af66-7a363a4ef51a",
+      "coactivations": 13,
+      "delta": 3.0,
+      "old_weight": 0,
+      "new_weight": 3.0,
+      "edge_existed": false
+    }
+  ]
+}

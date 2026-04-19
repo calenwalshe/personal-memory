@@ -1,0 +1,163 @@
+{
+  "baseline": {
+    "entities": 828,
+    "relations": 2196,
+    "communities": 115,
+    "avg_weight": 1.0733151183970857,
+    "max_weight": 11.0,
+    "rel_by_type": {
+      "related_to": 1885,
+      "uses": 100,
+      "part_of": 98,
+      "depends_on": 49,
+      "deployed_on": 20,
+      "configured_by": 19,
+      "replaced_by": 13,
+      "built_with": 9,
+      "analogous_to": 3
+    },
+    "top_edges": [
+      {
+        "src": "yt_dj",
+        "tgt": "Liquidsoap",
+        "type": "related_to",
+        "weight": 11.0
+      },
+      {
+        "src": "music-genome",
+        "tgt": "genre-curation-skill",
+        "type": "related_to",
+        "weight": 6.0
+      },
+      {
+        "src": "call-agent",
+        "tgt": "Bland AI",
+        "type": "related_to",
+        "weight": 4.0
+      },
+      {
+        "src": "serverlogin",
+        "tgt": "Chrome",
+        "type": "related_to",
+        "weight": 4.0
+      },
+      {
+        "src": "serverlogin",
+        "tgt": "benchmark",
+        "type": "related_to",
+        "weight": 4.0
+      },
+      {
+        "src": "YouTube",
+        "tgt": "yt_dj",
+        "type": "related_to",
+        "weight": 4.0
+      },
+      {
+        "src": "yt_dj",
+        "tgt": "FFmpeg",
+        "type": "related_to",
+        "weight": 4.0
+      },
+      {
+        "src": "analyze_library.py",
+        "tgt": "yt_dj",
+        "type": "related_to",
+        "weight": 3.0
+      },
+      {
+        "src": "L0",
+        "tgt": "L1",
+        "type": "related_to",
+        "weight": 3.0
+      },
+      {
+        "src": "/clear",
+        "tgt": "chunker",
+        "type": "related_to",
+        "weight": 3.0
+      }
+    ]
+  },
+  "experiment": {
+    "entities": 828,
+    "relations": 2524,
+    "communities": 145,
+    "avg_weight": 1.240610142630745,
+    "max_weight": 12.8,
+    "rel_by_type": {
+      "related_to": 2213,
+      "uses": 100,
+      "part_of": 98,
+      "depends_on": 49,
+      "deployed_on": 20,
+      "configured_by": 19,
+      "replaced_by": 13,
+      "built_with": 9,
+      "analogous_to": 3
+    },
+    "top_edges": [
+      {
+        "src": "yt_dj",
+        "tgt": "Liquidsoap",
+        "type": "related_to",
+        "weight": 12.8
+      },
+      {
+        "src": "music-genome",
+        "tgt": "genre-curation-skill",
+        "type": "related_to",
+        "weight": 6.9
+      },
+      {
+        "src": "systemd",
+        "tgt": "openclaw-ui",
+        "type": "related_to",
+        "weight": 6.0
+      },
+      {
+        "src": "Cortex",
+        "tgt": "power-search",
+        "type": "related_to",
+        "weight": 6.0
+      },
+      {
+        "src": "Chrome",
+        "tgt": "openclaw-ui",
+        "type": "related_to",
+        "weight": 6.0
+      },
+      {
+        "src": "autoresearch-memory",
+        "tgt": "memory infrastructure",
+        "type": "related_to",
+        "weight": 5.0
+      },
+      {
+        "src": "autoresearch-memory",
+        "tgt": "knowledge-consolidation-engine",
+        "type": "related_to",
+        "weight": 5.0
+      },
+      {
+        "src": "claude -p",
+        "tgt": "Anthropic API",
+        "type": "related_to",
+        "weight": 5.0
+      },
+      {
+        "src": "Codex",
+        "tgt": "claude -p",
+        "type": "related_to",
+        "weight": 5.0
+      },
+      {
+        "src": "Rich",
+        "tgt": "TUI",
+        "type": "related_to",
+        "weight": 5.0
+      }
+    ]
+  },
+  "compared_at": "2026-04-17T20:05:57.094541+00:00"
+}

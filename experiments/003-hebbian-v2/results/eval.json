@@ -1,0 +1,204 @@
+{
+  "experiment": "003-hebbian-v2",
+  "eval_at": "2026-04-18T05:14:39.609891+00:00",
+  "hypothesis": "Removing the MAX_DELTA cap (set to 20.0) allows the Hebbian weight update to encode co-activation magnitude rather than just co-presence \u2014 pairs with 65 shared sessions should get ~19.5x more weight than pairs with 2 sessions",
+  "challenges": [
+    {
+      "id": 1,
+      "title": "Top trio saturation collision",
+      "question": "Do autoresearch-memory, Cortex, and window_classifier all share the same 65 sessions, making their pairwise \u0394w=19.5 a clique artifact rather than independent co-activation evidence \u2014 i.e., are these three entities present in an overlapping superset of sessions rather than genuinely pairwise correlated?",
+      "entity_a": "autoresearch-memory",
+      "entity_b": "window_classifier",
+      "probe": "coactivation",
+      "community_a": null,
+      "community_b": null
+    },
+    {
+      "id": 2,
+      "title": "Codex \u2194 config.toml semantic legitimacy",
+      "question": "Is the Codex \u2194 config.toml bridge (\u0394w=13.5, coact=45) driven by genuine semantic coupling \u2014 e.g., Codex model config being tuned alongside config.toml edits \u2014 or is it a session-boundary artifact where config.toml is touched in nearly every session as boilerplate, inflating coactivation with any high-frequency entity?",
+      "entity_a": "Codex",
+      "entity_b": "config.toml",
+      "probe": "atoms",
+      "community_a": null,
+      "community_b": null
+    },
+    {
+      "id": 3,
+      "title": "Max weight ceiling breach",
+      "question": "The reported max_weight is 21.5, but the top results show a maximum \u0394w of 19.5 \u2014 does the 21.5 max belong to an entity pair not surfaced in the top-8 list, and if so, does that pair have higher coactivation than 65 or did a numerical artifact (e.g., a pre-existing base weight from the forked 002 graph) push it past the new uncapped update?",
+      "entity_a": "autoresearch-memory",
+      "entity_b": "Cortex",
+      "probe": "coactivation",
+      "community_a": null,
+      "community_b": null
+    },
+    {
+      "id": 4,
+      "title": "Community collapse under weight amplification",
+      "question": "The largest community grew from 36 to 58 members while community count dropped by 15 \u2014 did the uncapped weights cause the knowledge-consolidation-engine cluster (which appears in three top-8 pairs) to absorb formerly independent communities, and does the merged community now conflate entities that were separated in 002 for structurally meaningful reasons?",
+      "entity_a": "autoresearch-memory",
+      "entity_b": "knowledge-consolidation-engine",
+      "probe": "community",
+      "community_a": "knowledge-consolidation-engine cluster",
+      "community_b": null
+    }
+  ],
+  "evidence": [
+    {
+      "challenge_id": 1,
+      "entity_a": "autoresearch-memory",
+      "entity_b": "window_classifier",
+      "coactivation": {
+        "sessions_a": 73,
+        "sessions_b": 65,
+        "shared": 49,
+        "overlap_pct": 67.1
+      }
+    },
+    {
+      "challenge_id": 2,
+      "entity_a": "Codex",
+      "entity_b": "config.toml",
+      "atoms": [
+        {
+          "content": "Codex batch calls have 5.4x token overhead due to full CLAUDE.md injection; fixable by excluding project documentation via config.toml `project_doc_fallback_filenames` setting.",
+          "type": "gotcha",
+          "topic": "codex-optimization",
+          "project": "memory-vault-scripts",
+          "date": "2026-04-12T05:30:33Z",
+          "entities": "[\"codex\", \"config.toml\", \"CLAUDE.md\", \"token overhead\"]"
+        },
+        {
+          "content": "Profile configs should stay lean \u2014 no project docs, no workspace scanning \u2014 and task-specific context, role framing, and preambles belong in the prompt itself, not the profile config.",
+          "type": "pattern",
+          "topic": "codex-token-efficiency",
+          "project": "memory-vault-scripts",
+          "date": "2026-04-12T05:58:12Z",
+          "entities": "[\"codex\", \"config.toml\", \"profile-optimization\"]"
+        }
+      ],
+      "atom_count": 2
+    },
+    {
+      "challenge_id": 3,
+      "entity_a": "autoresearch-memory",
+      "entity_b": "Cortex",
+      "coactivation": {
+        "sessions_a": 73,
+        "sessions_b": 108,
+        "shared": 65,
+        "overlap_pct": 60.2
+      }
+    },
+    {
+      "challenge_id": 4,
+      "entity_a": "autoresearch-memory",
+      "entity_b": "knowledge-consolidation-engine",
+      "communities": {}
+    }
+  ],
+  "verdict": {
+    "overall_verdict": "The uncapped Hebbian update encodes genuine magnitude signal in at least one case (Codex \u2194 config.toml) but produces a saturated clique at the top that obscures rather than differentiates the strongest associations.",
+    "quality_score": 2.8,
+    "challenge_verdicts": [
+      {
+        "challenge_id": 1,
+        "ruling": "spurious",
+        "finding": "autoresearch-memory (73 sessions), Cortex (108 sessions), and window_classifier (65 sessions) form a near-complete overlap clique \u2014 autoresearch-memory \u2194 window_classifier shares 49 of 65 sessions (67%), confirming the \u0394w=19.5 ceiling is hit because all three entities are near-omnipresent, not because they are semantically coupled. The top two \u0394w=19.5 results are clique artifacts, not independent co-activation evidence."
+      },
+      {
+        "challenge_id": 2,
+        "ruling": "valid",
+        "finding": "Both atoms tie Codex and config.toml to a specific technical coupling: CLAUDE.md injection inflating token costs, fixed via config.toml's `project_doc_fallback_filenames` setting. This is a reproducible, semantically coherent relationship \u2014 not a boilerplate-touch artifact \u2014 making Codex \u2194 config.toml the experiment's cleanest signal."
+      },
+      {
+        "challenge_id": 3,
+        "ruling": "edge-case",
+        "finding": "The max_weight of 21.5 belongs to a pair outside the top-8 list, meaning a numerical artifact \u2014 almost certainly a non-zero base weight inherited from the forked 002 graph \u2014 pushed it past the theoretical \u0394w ceiling of 19.5. This is not a co-activation record; it is a graph-state contamination artifact that will silently distort any ranking that treats raw weight as a clean signal."
+      },
+      {
+        "challenge_id": 4,
+        "ruling": "edge-case",
+        "finding": "Evidence for the community-collapse claim is inconclusive \u2014 the community payload returned empty \u2014 but the structural pattern in the top-8 results (autoresearch-memory, Cortex, window_classifier, and knowledge-consolidation-engine appearing in six of eight pairs) is consistent with a dominant hub absorbing formerly distinct clusters. Without community membership data the collapse hypothesis cannot be confirmed, but the risk is real and worth auditing before promotion."
+      }
+    ],
+    "exhibit_a": [
+      {
+        "title": "Codex \u2194 config.toml: Semantic Coupling That Earns Its Weight",
+        "claim": "Uncapped weights allow a mid-tier pair (\u0394w=13.5, coact=45) to surface a specific, actionable technical relationship that a binary co-presence model would bury under noise.",
+        "evidence": "Atom: 'Codex batch calls have 5.4x token overhead due to full CLAUDE.md injection; fixable by excluding project documentation via config.toml `project_doc_fallback_filenames` setting.' Topic: codex-optimization. Both atoms confirm a direct causal link.",
+        "why_it_matters": "This is exactly the retrieval the system is supposed to enable \u2014 a concrete fix, not a generic association \u2014 and it only surfaces because magnitude encoding promotes it above threshold."
+      },
+      {
+        "title": "\u0394w Proportionality Holds in the Mid-Range",
+        "claim": "The coact\u2192\u0394w mapping is monotone and proportional across the non-saturated range: coact=65\u2192\u0394w=19.5, coact=49\u2192\u0394w=14.7, coact=45\u2192\u0394w=13.5, coact=41\u2192\u0394w=12.3.",
+        "evidence": "Top-8 results show a clean linear relationship between shared session count and \u0394w for all pairs below the saturation ceiling, confirming the hypothesis holds where it matters most.",
+        "why_it_matters": "The proportionality gives the graph a meaningful gradient for downstream ranking \u2014 retrieval can now distinguish 'strongly correlated' from 'somewhat correlated' rather than treating all co-occurring pairs as equal."
+      },
+      {
+        "title": "extract_sessions.py \u2194 GraphRAG: Independent Signal in the Top 8",
+        "claim": "At coact=45 and \u0394w=13.5, this pair is not part of the omnipresent clique and represents a structurally independent co-activation signal, validating that the uncapped update finds real relationships outside the saturated top.",
+        "evidence": "Neither extract_sessions.py nor GraphRAG appears in any other top-8 pair, confirming this is not a hub-and-spoke artifact from the autoresearch-memory/Cortex/window_classifier clique.",
+        "why_it_matters": "Demonstrates the experiment produces value outside its worst-case pathology \u2014 the top is noisy but the mid-range is genuinely informative."
+      }
+    ],
+    "edge_cases": [
+      {
+        "title": "002 Graph State Contamination",
+        "finding": "max_weight=21.5 exceeds the theoretical \u0394w ceiling of 19.5, indicating at least one pair carried a non-zero base weight from the forked 002 graph. Raw weight cannot be treated as a clean signal without knowing which pairs started from zero.",
+        "recommendation": "Before promoting, audit all pairs where weight > 19.5 and verify whether the excess derives from inherited 002 state or genuine new co-activation. Consider enforcing a graph-reset (zero initialization) on all future experiments to prevent baseline contamination."
+      },
+      {
+        "title": "Omnipresent Entity Saturation",
+        "finding": "Entities present in 60%+ of sessions (autoresearch-memory, Cortex, window_classifier) will always hit the \u0394w ceiling with each other regardless of semantic content, crowding the top-N results with clique noise.",
+        "recommendation": "Apply a frequency-normalized co-activation score (e.g., PMI or Jaccard) as a pre-filter before Hebbian update, or cap weight contribution from entities exceeding a session-frequency threshold."
+      },
+      {
+        "title": "Community Collapse \u2014 Unverifiable but Plausible",
+        "finding": "The community membership payload returned empty for the knowledge-consolidation-engine cluster, making it impossible to confirm or deny that uncapped weights merged formerly distinct communities. The top-8 structure is consistent with hub absorption.",
+        "recommendation": "Re-run the community probe with corrected tooling and compare membership lists against 002 before making any production decision. Community structure is a key safety signal for retrieval quality."
+      }
+    ],
+    "open_questions": [
+      "What is the session-frequency distribution of entities in the full graph \u2014 how many entities are in the >60% saturation zone, and what fraction of total edge weight do they account for?",
+      "Does resetting the 003 graph to zero initialization and re-running the update change the max_weight ceiling, and if so by how much \u2014 this directly tests whether the 21.5 anomaly is inherited state or a new artifact?",
+      "Would a PMI-normalized variant of the Hebbian update preserve the Codex \u2194 config.toml signal while suppressing the autoresearch-memory/Cortex/window_classifier clique \u2014 and at what normalization strength does the mid-range signal degrade?"
+    ],
+    "for_human": "Do not promote 003 as-is. The experiment proves the core hypothesis in the mid-range (Codex \u2194 config.toml is a clean, semantically grounded result), but the top of the ranking is dominated by a three-entity saturation clique that tells you nothing except that autoresearch-memory, Cortex, and window_classifier are omnipresent \u2014 which you already knew. The 21.5 max_weight anomaly also suggests the 002 graph baseline is contaminating results. The fix is small: frequency normalization (PMI or Jaccard) before the Hebbian update, plus zero-initialization on the next run \u2014 if those two changes preserve the mid-range signal while clearing the clique, 004 is promotable."
+  },
+  "metrics_summary": {
+    "baseline": {
+      "relations": {
+        "edge_count": 1887,
+        "mean_weight": 1.085,
+        "max_weight": 11.0,
+        "weight_gt_5": 2,
+        "weight_gt_10": 1
+      },
+      "communities": {
+        "community_count": 160,
+        "total_entities_in_communities": 828,
+        "avg_community_size": 5.17,
+        "max_community_size": 36,
+        "singleton_count": 2
+      }
+    },
+    "post": {
+      "relations": {
+        "edge_count": 2220,
+        "mean_weight": 1.493,
+        "max_weight": 21.5,
+        "weight_gt_5": 107,
+        "weight_gt_10": 16
+      },
+      "communities": {
+        "community_count": 145,
+        "total_entities_in_communities": 828,
+        "avg_community_size": 5.71,
+        "max_community_size": 58,
+        "singleton_count": 2
+      }
+    }
+  }
+}
