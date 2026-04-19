@@ -1,51 +1,65 @@
 # Knowledge Consolidation Engine
 
-Automated pipeline that promotes session-extracted facts into durable vault threads. Replaces manual `/memory-consolidate` for high-volume sessions.
+Automated pipeline that aggregates raw L0 sense data into durable L1 memory atoms. Replaces the old session-extraction → window-classifier → fact-store pipeline.
 
 ## Architecture
 
 ```
-Session logs
-    └─ extract_sessions.py       # chunk logs into exchange windows
-    └─ window_classifier.py      # LLM classifies each window as fact/noise
-    └─ fact_store.py             # embed + store in FAISS (facts.db)
-    └─ deep_consolidate.py       # GraphRAG: community reports → candidates
-    └─ subagent_graphbuilder.py  # builds the community graph
-    └─ autoresearch_loop.py      # parameter optimizer (targets F1 ≥ 0.70)
+L0 events.db (continuous, per tool call)
+    └─ chunker.py           # boundary-agnostic clustering of L0 events
+    └─ atom_store.py         # atoms.db + FAISS (embed + store)
+                                 ↓
+                          vault context     (SessionStart injection)
+                          vault recall      (semantic search + synthesis)
+                          vault atoms       (list, show, search, stats)
 ```
+
+## How It Works
+
+1. **L0 collection** — `postuse-event-logger.sh` writes every tool call as a SCAPE stimulus compound to events.db. `sessionend-db-update.sh` writes messages and sequences at session end.
+
+2. **Chunker triggers** — PreCompact (auto) and SessionEnd (productive sessions or /clear) kick the chunker via `vault chunk <project>`.
+
+3. **Noise filtering** — keeps Bash/Write/Edit/errors/retries, drops internal plumbing (TaskCreate, Skill, etc.), conditionally keeps orientation reads (Read/Glob/Grep) only if followed by action within 30s.
+
+4. **Pre-clustering** — groups events by content signals:
+   - Hard close: >2h gap, project change, /clear
+   - Soft close: intent shift, entity overlap drop, >30min gap
+   - Size cap: max 15 events per cluster
+   - Lazy closing: clusters stay open/provisional across runs
+
+5. **Haiku refinement** — closed clusters are sent to Haiku in batches. Haiku confirms/adjusts boundaries and produces typed atoms (decision, discovery, failure, pattern, gotcha, outcome).
+
+6. **Provenance assembly** — each atom gets a denormalized metadata package: source event IDs, session IDs, time range, git context, trigger, tools used, files touched, error/retry signals.
+
+7. **Storage** — atoms written to atoms.db (SQLite WAL) + FAISS index (all-MiniLM-L6-v2 embeddings).
 
 ## Current Status
 
-| Stage | Status |
+| Component | Status |
 |---|---|
-| Session extraction | Working |
-| Window classification | Working (F1: 0.25, target: 0.70) |
-| Fact embedding + retrieval | Working |
-| GraphRAG community builder | Bootstrap error — `community_reports.parquet` missing |
-| Autoresearch optimizer | Blocked on graph bootstrap |
+| L0 event collection | Stable, all hooks active |
+| L1 chunker | Live, tested across 7 projects |
+| Atom storage + FAISS | Working |
+| vault context (SessionStart) | Working, reads atoms.db with facts.db fallback |
+| vault recall / /recall | Working, atoms.db preferred |
+| L2+ aggregation | Not yet designed |
 
-## Active Work
+## Key Design Decisions
 
-**Goal:** Push window classifier F1 from 0.25 → 0.70+
+| Decision | Rationale |
+|---|---|
+| Boundary-agnostic chunking | Sessions are noisy boundaries (94% are 0-event subprocesses); content-driven chunks are more meaningful |
+| Project-keyed state | Same project across sessions = continuous stream; chunker cursor persists per-project |
+| Haiku refines, doesn't discover | Heuristic pre-clustering does the heavy lifting; Haiku only confirms boundaries and produces atom text |
+| Denormalized provenance | Each atom is self-contained — no joins to events.db needed for reading |
+| env -u ANTHROPIC_API_KEY | Forces claude -p to use subscription instead of depleted API credits |
 
-Parameter search space:
-- `classifier_prompt`: v1, v2, v3
-- `window_size`: 3, 5, 7
-- `confidence_threshold`: 0.3 – 0.7
+## Superseded Components
 
-Prior architecture (GraphRAG loop) achieved F1: 0.074 on a contaminated eval set — abandoned.
-
-## Auto-Promotion Logic (`deep_consolidate.py`)
-
-A community is auto-promoted to a vault thread if:
-- 6-signal score ≥ 0.65
-- Sessions ≥ 2
-- Week span ≥ 2
-- No contradiction with existing threads
-
-Otherwise it lands in `candidates/` for manual `/memory-review-candidates`.
-
-## Known Issues
-
-- `community_reports.parquet` bootstrap failure — graph builder PID exited before completing index
-- 4 pending contradictions in `facts.db` need human resolution (`/recall --pending`)
+These are from the old pipeline and are no longer used:
+- `window_classifier.py` — replaced by chunker.py's noise filter + pre-clustering
+- `extract_sessions.py` — replaced by direct L0 event reads
+- `deep_consolidate.py` / `subagent_graphbuilder.py` — GraphRAG approach abandoned
+- `autoresearch_loop.py` — parameter optimizer no longer needed
+- `facts.db` — preserved but superseded by atoms.db

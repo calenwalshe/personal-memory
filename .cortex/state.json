@@ -1,15 +1,26 @@
 {
-  "slug": "session-continuity",
+  "slug": "knowledge-consolidation-engine",
   "mode": "execute",
-  "approval_status": "approved",
-  "active_contract": "docs/cortex/contracts/session-continuity/contract-001.md",
+  "approval_status": "pending",
+  "active_contract": "docs/cortex/contracts/knowledge-consolidation-engine/contract-001.md",
   "artifacts": [
     "docs/cortex/clarify/session-continuity/20260414T160000Z-clarify-brief.md",
     "docs/cortex/research/session-continuity/current-understanding.md",
     "docs/cortex/research/session-continuity/concept-20260414T170000Z.md",
     "docs/cortex/specs/session-continuity/spec.md",
     "docs/cortex/specs/session-continuity/gsd-handoff.md",
-    "docs/cortex/contracts/session-continuity/contract-001.md"
+    "docs/cortex/contracts/session-continuity/contract-001.md",
+    "docs/cortex/clarify/hebbian-decay/20260418T063000Z-clarify-brief.md",
+    "docs/cortex/research/hebbian-decay/current-understanding.md",
+    "docs/cortex/research/hebbian-decay/concept-20260418T073000Z.md",
+    "docs/cortex/specs/hebbian-decay/spec.md",
+    "docs/cortex/specs/hebbian-decay/gsd-handoff.md",
+    "docs/cortex/contracts/hebbian-decay/contract-001.md",
+    "docs/cortex/clarify/knowledge-consolidation-engine/20260419T030000Z-clarify-brief.md",
+    "docs/cortex/research/knowledge-consolidation-engine/current-understanding.md",
+    "docs/cortex/specs/knowledge-consolidation-engine/spec.md",
+    "docs/cortex/specs/knowledge-consolidation-engine/gsd-handoff.md",
+    "docs/cortex/contracts/knowledge-consolidation-engine/contract-001.md"
   ],
   "gates": {
     "clarify_complete": true,
