@@ -2666,6 +2666,198 @@ Respond with ONLY valid JSON:
 
 # ── Snapshot store ─────────────────────────────────────────────────────────
 
+def cmd_ingest(args):
+    """Ingest a document or note into sources.db → L1 evidence units."""
+    from source_store import source_stats
+
+    source_type = getattr(args, "type", None) or "doc"
+    file_path = getattr(args, "file", None)
+    note_text = getattr(args, "note_text", None)
+    project = getattr(args, "project", None)
+    title = getattr(args, "title", None)
+
+    if source_type == "note" or note_text:
+        from intake_notes import ingest_note
+        if file_path:
+            text = Path(file_path).read_text(encoding="utf-8")
+        elif note_text:
+            text = note_text
+        elif not sys.stdin.isatty():
+            text = sys.stdin.read()
+        else:
+            die("vault ingest --type note requires text, --file, or stdin")
+        result = ingest_note(text, project=project, title=title, file_path=file_path)
+    else:
+        from intake_doc import ingest_document
+        if not file_path:
+            die("vault ingest requires a file path (or use --type note for text)")
+        result = ingest_document(file_path, project=project, title=title)
+
+    print(f"Ingested: {result['title']}")
+    print(f"  Source ID:  {result['source_id']}")
+    print(f"  Segments:   {result['segment_count']}")
+    print(f"  Chars:      {result['char_count']:,}")
+
+    stats = source_stats()
+    print(f"\nSources total: {stats['total_sources']} ({stats['total_segments']} segments)")
+
+
+def cmd_l3(args):
+    """L3 belief runtime — extract, infer, stats."""
+    action = getattr(args, "l3_action", None) or "stats"
+    project = getattr(args, "project", None)
+    module = getattr(args, "module", "personal")
+    all_atoms = getattr(args, "all", False)
+    dry_run = getattr(args, "dry_run", False)
+
+    if action == "extract":
+        from l3_engine import extract_forms
+        from belief_store import init_beliefs_db
+        init_beliefs_db()
+        result = extract_forms(project=project, all_atoms=all_atoms, dry_run=dry_run)
+        if not dry_run:
+            print(f"\nExtracted {result['forms_extracted']} forms from {result['atoms_scanned']} atoms")
+
+    elif action == "infer":
+        from l3_engine import run_inference
+        from belief_store import init_beliefs_db
+        init_beliefs_db()
+        result = run_inference(module_name=module, dry_run=dry_run)
+        if not dry_run:
+            print(f"\n{result['derived_created']} derived, {result['status_changes']} status changes, "
+                  f"{result['passes']} passes")
+
+    elif action == "pipeline":
+        from l3_engine import run_full_pipeline
+        run_full_pipeline(project=project, module_name=module,
+                         all_atoms=all_atoms, dry_run=dry_run)
+
+    elif action == "stats":
+        from belief_store import belief_stats, init_beliefs_db
+        init_beliefs_db()
+        stats = belief_stats()
+        print("L3 Belief Engine")
+        print("=" * 50)
+        print(f"  Logical forms:  {stats['logical_forms']['active']} active "
+              f"(of {stats['logical_forms']['total']} total)")
+        if stats['logical_forms']['by_type']:
+            for t, n in stats['logical_forms']['by_type'].items():
+                print(f"    {t}: {n}")
+        print(f"  Worlds:         {stats['worlds']}")
+        if stats['form_status']['by_world']:
+            for w, n in stats['form_status']['by_world'].items():
+                print(f"    {w}: {n}")
+        print(f"  Derived:        {stats['derived_objects']['active']} active")
+        if stats['derived_objects']['by_type']:
+            for t, n in stats['derived_objects']['by_type'].items():
+                print(f"    {t}: {n}")
+        print(f"  Inference log:  {stats['inference_log']['total']} entries")
+
+    else:
+        die(f"Unknown l3 action: {action}. Valid: extract, infer, pipeline, stats")
+
+
+def cmd_beliefs(args):
+    """Query current beliefs."""
+    from belief_store import get_current_beliefs, explain_belief, init_beliefs_db
+    init_beliefs_db()
+
+    query = getattr(args, "query", None)
+    form_id = getattr(args, "explain", None)
+    project = getattr(args, "project", None)
+    limit = getattr(args, "n", 20)
+
+    if form_id:
+        exp = explain_belief(form_id)
+        if "error" in exp:
+            die(f"Form not found: {form_id}")
+        f = exp["form"]
+        print(f"Form: {f['content']}")
+        print(f"  Type:       {f['form_type']}")
+        print(f"  Subject:    {f.get('subject', '?')}")
+        print(f"  Predicate:  {f.get('predicate', '?')}")
+        print(f"  Object:     {f.get('object', '?')}")
+        print(f"  Confidence: {f.get('confidence', '?')}")
+        print(f"  Extracted:  {f.get('extracted_at', '?')}")
+        print()
+        print("Statuses:")
+        for s in exp["statuses"]:
+            valid = "active" if not s.get("valid_until") else f"expired {s['valid_until']}"
+            print(f"  {s['world_label']}: {s['status']} ({valid})")
+        if exp["derived_objects"]:
+            print("\nDerived objects:")
+            for d in exp["derived_objects"]:
+                print(f"  [{d['type']}] {d['content'][:80]}")
+        if exp["inference_history"]:
+            print("\nInference history:")
+            for i in exp["inference_history"]:
+                print(f"  [{i['rule_name']}] {i['action']} — {i.get('detail', '')[:60]}")
+        return
+
+    beliefs = get_current_beliefs(project=project, limit=limit)
+    if not beliefs:
+        print("No current beliefs. Run: vault l3 pipeline")
+        return
+
+    # Simple text search filter if query provided
+    if query:
+        q_lower = query.lower()
+        beliefs = [b for b in beliefs if q_lower in (b.get("content", "") + " " +
+                   (b.get("subject") or "") + " " + (b.get("topic") or "")).lower()]
+
+    print(f"Current beliefs ({len(beliefs)}):")
+    print()
+    for b in beliefs:
+        status_tag = f"[{b.get('status', '?')}]" if b.get('status') == 'stable' else ""
+        print(f"  [{b['form_type']:10s}] {b['content'][:80]} {status_tag}")
+        if b.get("subject"):
+            print(f"  {'':12s} subject={b['subject']}")
+
+
+def cmd_conflicts(args):
+    """List contradictions found by the inference engine."""
+    from belief_store import get_contradictions, init_beliefs_db
+    init_beliefs_db()
+
+    namespace = getattr(args, "namespace", None)
+    contradictions = get_contradictions(namespace=namespace)
+
+    if not contradictions:
+        print("No contradictions found.")
+        return
+
+    print(f"Contradictions ({len(contradictions)}):")
+    print()
+    for c in contradictions:
+        print(f"  {c['content']}")
+        print(f"    Rule: {c['rule_fired']}, confidence: {c['confidence']}")
+        print(f"    Created: {c['created_at'][:16]}")
+        print()
+
+
+def cmd_derived(args):
+    """List derived objects from inference rules."""
+    from belief_store import get_derived, init_beliefs_db
+    init_beliefs_db()
+
+    type_ = getattr(args, "type", None)
+    namespace = getattr(args, "namespace", None)
+    limit = getattr(args, "n", 50)
+
+    derived = get_derived(type_=type_, namespace=namespace, limit=limit)
+
+    if not derived:
+        print("No derived objects. Run: vault l3 pipeline")
+        return
+
+    print(f"Derived objects ({len(derived)}):")
+    print()
+    for d in derived:
+        print(f"  [{d['type']:16s}] {d['content'][:80]}")
+        print(f"    {'':18s} rule={d['rule_fired']}, ns={d['namespace']}, conf={d['confidence']}")
+        print()
+
+
 def cmd_snap(args):
     """
     Snapshot store — version control for graph.db.
@@ -3081,6 +3273,43 @@ def main():
     p_lab.add_argument("--notes", dest="grade_notes", default=None,
                        help="Notes to attach to grade")
 
+    # ingest — universal source intake
+    p_ingest = sub.add_parser("ingest", help="Ingest a document or note into the vault", **G)
+    p_ingest.add_argument("file", nargs="?", default=None, help="Path to file to ingest")
+    p_ingest.add_argument("--type", choices=["doc", "note"], default="doc",
+                          help="Source type (default: doc)")
+    p_ingest.add_argument("--note-text", default=None, help="Inline note text")
+    p_ingest.add_argument("--project", default=None, help="Project scope")
+    p_ingest.add_argument("--title", default=None, help="Source title")
+
+    # l3 — belief runtime engine
+    p_l3 = sub.add_parser("l3", help="L3 belief runtime — extract, infer, pipeline, stats", **G)
+    p_l3.add_argument("l3_action", nargs="?",
+                      choices=["extract", "infer", "pipeline", "stats"],
+                      default="stats")
+    p_l3.add_argument("--project", default=None, help="Project scope")
+    p_l3.add_argument("--module", default="personal", help="L3 module (default: personal)")
+    p_l3.add_argument("--all", action="store_true", default=False,
+                      help="Process all atoms, not just new")
+    p_l3.add_argument("--dry-run", action="store_true", default=False)
+
+    # beliefs — query current beliefs
+    p_beliefs = sub.add_parser("beliefs", help="Query current beliefs", **G)
+    p_beliefs.add_argument("query", nargs="?", default=None, help="Filter beliefs by keyword")
+    p_beliefs.add_argument("--explain", default=None, help="Explain a specific form by ID")
+    p_beliefs.add_argument("--project", default=None, help="Filter by project")
+    p_beliefs.add_argument("-n", type=int, default=20, help="Limit")
+
+    # conflicts — list contradictions
+    p_conflicts = sub.add_parser("conflicts", help="List contradictions from inference", **G)
+    p_conflicts.add_argument("--namespace", default=None, help="Filter by namespace")
+
+    # derived — list derived objects
+    p_derived = sub.add_parser("derived", help="List derived objects from inference", **G)
+    p_derived.add_argument("--type", default=None, help="Filter by type")
+    p_derived.add_argument("--namespace", default=None, help="Filter by namespace")
+    p_derived.add_argument("-n", type=int, default=50, help="Limit")
+
     # ── vault snap ─────────────────────────────────────────────────────────
     p_snap = sub.add_parser("snap", help="Snapshot store — version control for graph.db", **G)
     p_snap.add_argument(
@@ -3114,6 +3343,11 @@ def main():
         "recall": cmd_recall,
         "digest": cmd_digest,
         "lab": cmd_lab,
+        "ingest": cmd_ingest,
+        "l3": cmd_l3,
+        "beliefs": cmd_beliefs,
+        "conflicts": cmd_conflicts,
+        "derived": cmd_derived,
         "snap": cmd_snap,
     }
 
