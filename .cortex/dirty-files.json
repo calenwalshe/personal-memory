@@ -1,0 +1,18 @@
+{
+  "dirty": [
+    "/home/agent/projects/personal-memory/.cortex/state.json",
+    "/home/agent/.claude/hooks/precompact-session-snapshot.sh",
+    "/home/agent/.claude/hooks/sessionend-session-summary.sh",
+    "/home/agent/.claude/hooks/cortex-session-start.sh",
+    "/home/agent/.claude/settings.json",
+    "/home/agent/projects/personal-memory/.gitignore",
+    "/home/agent/.claude/projects/-home-agent-projects-personal-memory/memory/project_session-continuity.md",
+    "/home/agent/.claude/projects/-home-agent-projects-personal-memory/memory/MEMORY.md",
+    "/home/agent/.claude/hooks/postuse-git-episode.sh",
+    "/home/agent/.claude/hooks/precompact-memory-snapshot.sh",
+    "/home/agent/.claude/hooks/postuse-event-logger.sh",
+    "/home/agent/.claude/hooks/sessionend-db-update.sh",
+    "/home/agent/.claude/hooks/sessionstart-snapshot.sh",
+    "/home/agent/.claude/CLAUDE.md"
+  ]
+}

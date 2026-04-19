@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "slug": "hebbian-decay",
+  "iteration": 5,
+  "started_at": "2026-04-18T14:33:36.237095+00:00",
+  "last_updated": "2026-04-18T15:17:04.877310+00:00",
+  "clarify_brief_path": "docs/cortex/clarify/hebbian-decay/20260418T063000Z-clarify-brief.md",
+  "depth": "deep",
+  "hard_limits": {
+    "max_iterations": 8,
+    "max_cost_usd": 0.5,
+    "max_wall_time_s": 600
+  },
+  "cost_accumulated": 0.0,
+  "wall_time_s": 0,
+  "questions": [
+    {
+      "id": "q1",
+      "text": "What DECAY rate per-session preserves stable associations while fading stale ones \u2014 BCM theory, STDP, homeostatic plasticity?",
+      "type": "factual",
+      "status": "open",
+      "findings": []
+    },
+    {
+      "id": "q2",
+      "text": "What Hebbian/LTD decay implementations exist in knowledge graph and memory systems (Zep, Graphiti, MemGPT, Letta)?",
+      "type": "landscape",
+      "status": "open",
+      "findings": []
+    },
+    {
+      "id": "q3",
+      "text": "How does synaptic depression (LTD) work mechanistically in STDP \u2014 the mathematical form of the decay rule?",
+      "type": "mechanism",
+      "status": "open",
+      "findings": []
+    },
+    {
+      "id": "q4",
+      "text": "How quickly do human interests shift \u2014 what timescales are meaningful for a daily-use personal memory system?",
+      "type": "factual",
+      "status": "open",
+      "findings": []
+    },
+    {
+      "id": "q5",
+      "text": "What graph quality metrics exist for measuring whether edge weights encode current topology vs historical accumulation?",
+      "type": "landscape",
+      "status": "open",
+      "findings": []
+    }
+  ],
+  "search_history": [],
+  "digest_history": [],
+  "current_understanding": "",
+  "evaluator_decisions": []
+}

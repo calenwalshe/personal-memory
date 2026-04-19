@@ -19,6 +19,9 @@ scripts/run.log
 scripts/*.jsonl
 scripts/eval_set.jsonl
 
+# Cortex runtime — per-session, never committed
+.cortex/session-memory.md
+
 # Python
 __pycache__/
 *.pyc
